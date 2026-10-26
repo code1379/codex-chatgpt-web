@@ -28,5 +28,9 @@ jobs:
         run: bun test ./tests/gateway.test.ts
       - name: Existing test suite
         run: bun test ./tests
+      - name: Prepare example environment for Compose validation
+        run: cp .env.gateway.example .env
       - name: Validate Compose syntax
         run: docker compose -f docker-compose.gateway.yml config --quiet
+      - name: Build Gateway container
+        run: docker build -f Dockerfile.gateway -t codex-chatgpt-web-gateway:ci .
