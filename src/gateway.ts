@@ -675,7 +675,12 @@ export async function runGateway(): Promise<void> {
             owned_by: "chatgpt-web",
             display_name: route.displayName,
           }));
-          return Response.json({ object: "list", data }, { headers: secureHeaders() });
+          const payload = { object: "list", data };
+          const etag = 'W/"' + Buffer.from(JSON.stringify(payload)).toString("base64url") + '"';
+          if (request.headers.get("if-none-match") === etag) {
+            return new Response(null, { status: 304, headers: secureHeaders({ etag }) });
+          }
+          return Response.json(payload, { headers: secureHeaders({ etag }) });
         }
 
         let body: BodyInit | undefined;
