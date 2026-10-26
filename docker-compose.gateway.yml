@@ -33,7 +33,7 @@ services:
     tmpfs:
       - /tmp:size=512m,mode=1777
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('https://127.0.0.1:17840/healthz',{tls:{rejectUnauthorized:false}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:17840/healthz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
