@@ -80,6 +80,7 @@ if (!browserHelperBuild.success) {
   throw new Error(`Browser helper bundle failed: ${browserHelperBuild.logs.map(log => log.message).join("; ")}`);
 }
 
+copyFileSync(join(root, "src", "gateway-admin.html"), join(appDir, "gateway-admin.html"));
 copyFileSync(join(root, "package.json"), join(appDir, "package.json"));
 copyFileSync(join(root, "bun.lock"), join(appDir, "bun.lock"));
 const install = Bun.spawnSync([process.execPath, "install", "--production", "--frozen-lockfile", "--ignore-scripts"], {
