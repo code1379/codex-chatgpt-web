@@ -160,10 +160,14 @@ export function addGatewayTurnMetadata(
     ?? userMetadata.gateway_thread_id
     ?? conversation.id
     ?? body.conversation_id;
+  // Only trust explicit caller identities from the documented opaque-id alphabet. The
+  // previous_response_id mapping is owned by this Gateway and is the continuation fallback.
   const threadId = validGatewayIdentity(requestedThread)
     ? requestedThread
     : (previousResponseId && responseThreads.get(previousResponseId)) || newGatewayIdentity("gw");
-  const turnId = validGatewayIdentity(turnMetadata.turn_id) ? turnMetadata.turn_id : newGatewayIdentity("turn");
+  // Every browser turn must have a fresh identity; a caller-provided turn_id may be stale
+  // or duplicated by clients that retry. Preserve the thread identity, rotate turn_id.
+  const turnId = newGatewayIdentity("turn");
   turnMetadata.thread_id = threadId;
   turnMetadata.turn_id = turnId;
   clientMetadata["x-codex-turn-metadata"] = JSON.stringify(turnMetadata);
