@@ -1,0 +1,85 @@
+# 远程 ChatGPT Web Gateway 改造计划
+
+## 目标
+
+在保留上游 `codex-chatgpt-web` 核心实现的前提下，增加一个面向服务器部署的独立 Gateway 模式，使其能够在 Ubuntu 24.04 + Docker Compose / 1Panel 中运行，并作为 CLIProxyAPI（CPA）的 Codex Responses 上游。
+
+目标调用链：
+
+`CPA codex-api-key provider -> private gateway URL -> codex-chatgpt-web Responses bridge -> authenticated ChatGPT browser session`
+
+此改造不应修改或破坏原有桌面启动器和原生 Codex 集成。
+
+## 关于现有 Linux 发布包
+
+- `codex-chatgpt-web-linux-amd64.tar.gz` 是由 `launcher/build/runtime` 打包的运行时 bundle，内含 Bun、CLI entrypoint、Playwright Core 及应用依赖。
+- 当前 `scripts/install.sh` 明确仅支持 macOS；官方 Linux 安装方式是 Electron AppImage 启动器。
+- 因此，Linux tarball 的存在不代表当前项目已经提供受支持的 Linux 无桌面服务安装流程。
+- Gateway 模式应单独提供安装/容器入口，不应伪装成现有 macOS terminal installer 的简单扩展。
+
+## 设计原则
+
+1. **隔离模式**：新增 `gateway` 运行模式或独立入口，不复用会修改本机 Codex 配置的 setup 路径。
+2. **复用核心**：尽可能复用 `responseRequest`、Responses parser、browser adapter、model routing、response-state 和 SSE bridge。
+3. **认证默认开启**：所有模型 API、远程登录 UI 和管理端点必须有独立 Bearer token 保护；启动时没有配置密钥应直接失败。
+4. **网络默认私有**：容器内监听由环境变量控制；Compose 默认只加入内部网络，不直接发布公网端口。
+5. **安全登录**：远程登录 UI 只能在认证后打开；截图、点击、键盘输入和保存登录状态均需验证授权。禁止将 ChatGPT cookie、storage state 或密码写入日志。
+6. **持久化**：将配置、浏览器登录状态和会话状态放入独立数据目录，权限最小化，并通过 Docker volume 持久化。
+7. **不绕过配额**：此服务只代理用户账号本身允许的网页能力，不承诺突破 ChatGPT 的使用限制。
+8. **透明兼容性**：只将已验证的能力声明为支持；未验证的工具调用、图片输入、取消、压缩等行为必须明确标记。
+
+## 当前已知的兼容性风险
+
+- 当前 Responses 服务默认绑定 `127.0.0.1`，且配置解析器强制 loopback；Gateway 模式需新增独立的监听配置，不能直接放宽原生 Codex 模式的安全约束。
+- 当前服务处理 `client_metadata["x-codex-turn-metadata"]` 中的 thread/turn identity，并依赖 Codex 语义；CPA 转发请求是否完整保留这些字段，必须通过真实集成测试验证。
+- CPA Codex executor 会删除 `previous_response_id`。连续对话是否依赖该字段、能否用 Gateway 管理的状态恢复输入，需要单独验证。
+- 当前 Linux terminal installer 不支持 Linux，且当前终端 service installer 仅支持 macOS。Gateway 模式应自行管理前台进程/容器生命周期，不调用 macOS launchd 管理路径。
+- 原项目默认未提供通用 API Key 认证；不能把没有认证的 Responses listener 直接暴露给公网或其他不可信网络。
+
+## 分阶段实施
+
+### Phase 0：运行时和协议基线
+
+- 验证 Linux runtime bundle 的文件布局、版本校验和、CLI `--version` 与 `--help`。
+- 在 Linux 环境运行静态验证和现有单元测试。
+- 建立 CPA Codex executor -> Gateway 的请求样本与兼容性测试，特别关注模型 slug、stream、thread/turn metadata 和 previous response state。
+
+### Phase 1：Gateway 服务骨架
+
+- 新增独立 Gateway 配置 schema 与 CLI 命令。
+- 支持 host、port、API key、数据目录、浏览器运行参数和日志级别。
+- 新增健康检查、模型列表、认证中间件和安全默认值。
+- 不调用 Codex route installation、macOS launchd 或 OpenAI tunnel setup。
+
+### Phase 2：无桌面登录和持久化
+
+- 使用服务器端浏览器进程及虚拟显示运行浏览器。
+- 提供受认证的远程登录 UI，支持屏幕查看和有限的鼠标/键盘交互。
+- 登录完成后验证 ChatGPT 会话，安全持久化状态；登录状态过期时返回清晰错误并要求重新登录。
+- 登录 UI 与模型 API 使用独立权限；禁止无认证的截图/键盘/鼠标控制端点。
+
+### Phase 3：CPA Responses 兼容
+
+- 提供 CPA 所需的 Responses 路径、SSE 事件和错误格式。
+- 确认模型列表及 `chatgpt-web/<model-slug>` 路由行为。
+- 验证单轮、连续对话、流式、客户端断开/取消、超时与并发。
+- 如 CPA 请求缺少原生 Codex 元数据，设计明确的 Gateway 适配逻辑，不伪造或跳过安全上下文验证。
+
+### Phase 4：Docker / 1Panel 部署与文档
+
+- 提供多阶段 Dockerfile、Compose、`.env.example`、持久化卷和健康检查。
+- 默认只接入 CPA 可访问的私有 Docker 网络；不发布未认证的公网端口。
+- 编写 1Panel 部署、首次登录、升级、备份/恢复和故障排查文档。
+
+## 验收标准
+
+- [ ] Linux x86_64 可通过 Docker Compose 构建并启动。
+- [ ] 未认证的 API、登录和控制请求均被拒绝。
+- [ ] 登录状态在容器重启后保留。
+- [ ] `/healthz` 与 `/v1/models` 行为稳定且不泄露凭据。
+- [ ] Responses 非流式请求返回标准 JSON。
+- [ ] Responses SSE 请求能返回完整的开始、增量和结束事件。
+- [ ] CPA `codex-api-key` 上游的真实集成测试通过。
+- [ ] 连续对话、previous response state、工具调用和取消行为分别有测试结果。
+- [ ] 原有桌面启动器和 Codex 集成的 CI 测试不回归。
+- [ ] 文档明确列出所有未支持的功能和账号风险。
