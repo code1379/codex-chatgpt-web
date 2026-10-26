@@ -83,3 +83,24 @@
 - [ ] 连续对话、previous response state、工具调用和取消行为分别有测试结果。
 - [ ] 原有桌面启动器和 Codex 集成的 CI 测试不回归。
 - [ ] 文档明确列出所有未支持的功能和账号风险。
+
+## Linux runtime bundle smoke test (2026-10-27)
+
+The upstream GitHub Actions release artifact was retrieved through the GitHub connector because direct DNS resolution for `github.com` is unavailable in the local execution container.
+
+Artifact provenance:
+- Upstream release workflow: [run 40281586918](https://github.com/miuuyy/codex-chatgpt-web/actions/runs/40281586918), successful `v6.1.14` release.
+- Linux x64 artifact: `release-ubuntu-latest`, containing `codex-chatgpt-web-linux-amd64.tar.gz` (55,843,241 bytes) and the Linux AppImage.
+- Runtime manifest reports app `6.1.14`, Bun `1.4.0`, Linux `x64`, Playwright `1.62.0`, and 4,899 manifest entries.
+
+Executed in an isolated Linux x86_64 container:
+- `bin/codex-chatgpt-web --version` -> `6.1.14` (pass).
+- `bin/codex-chatgpt-web --help` -> CLI starts and prints help (pass).
+- `bin/codex-chatgpt-web service status` -> `supported: false`, `installed: false`, `loaded: false` (expected: terminal service manager is not supported on Linux).
+- `setup --browser-only --acknowledge-unofficial --preflight-only` -> exit 1 with: `Terminal-only managed Chrome setup currently requires macOS. Use the Codex Web GPT launcher on Windows or Linux.` (confirms the standard terminal setup path is intentionally blocked on Linux).
+
+Conclusion:
+- The Linux `.tar.gz` is a real runnable runtime bundle, not merely documentation; its CLI can start.
+- It is **not** a supported headless-server installation flow. The supported Linux lifecycle is owned by the Electron launcher, while terminal-managed service installation is macOS-only.
+- No ChatGPT login was performed and no authenticated Responses request was sent in this smoke test.
+- Direct GitHub asset download from the execution container failed with `curl: (6) Could not resolve host: github.com`; the artifact was instead retrieved from the successful upstream Actions artifact.
