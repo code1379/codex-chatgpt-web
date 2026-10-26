@@ -13,13 +13,13 @@ services:
       GATEWAY_HOST: 0.0.0.0
       GATEWAY_PORT: 17840
       GATEWAY_INTERNAL_PORT: 17841
-      GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-/certs/fullchain.pem}
-      GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-/certs/privkey.pem}
+      GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-}
+      GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-}
+      GATEWAY_ALLOW_INSECURE_HTTP: "true"
     ports:
-      - "${GATEWAY_BIND_IP:-0.0.0.0}:17840:17840"
+      - "${GATEWAY_BIND_IP:-127.0.0.1}:17840:17840"
     volumes:
       - gateway-data:/data
-      - ${GATEWAY_CERT_DIR:-./certs}:/certs:ro
     shm_size: "1gb"
     security_opt:
       - no-new-privileges:true
@@ -29,11 +29,10 @@ services:
       - CHOWN
       - SETUID
       - SETGID
-    read_only: false
     tmpfs:
       - /tmp:size=512m,mode=1777
     healthcheck:
-      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:17840/healthz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
