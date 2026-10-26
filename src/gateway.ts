@@ -675,7 +675,17 @@ export async function runGateway(): Promise<void> {
           if (rawBody.byteLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
           if (request.method === "POST" && (url.pathname === "/v1/responses" || url.pathname === "/v1/responses/compact")) {
             try {
-              const decorated = addGatewayTurnMetadata(new TextDecoder().decode(rawBody), responseThreads);
+              const rawText = new TextDecoder("utf-8", { fatal: true }).decode(rawBody);
+              const input = JSON.parse(rawText) as unknown;
+              if (!input || typeof input !== "object" || Array.isArray(input)) {
+                return jsonError(400, "invalid_responses_request", "Responses request body must be a JSON object");
+              }
+              const model = (input as Record<string, unknown>).model;
+              const allowedModels = new Set(availableChatGptWebModelRoutes(config, true).map(route => route.slug));
+              if (typeof model !== "string" || !allowedModels.has(model)) {
+                return jsonError(400, "unsupported_model", "Use a model ID returned by GET /v1/models");
+              }
+              const decorated = addGatewayTurnMetadata(rawText, responseThreads);
               body = decorated.bodyText;
               threadId = decorated.threadId;
               headers.set("x-codex-turn-metadata", decorated.metadataHeader);
