@@ -23,6 +23,7 @@ import {
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
 import { startServer } from "./server";
+import { availableChatGptWebModelRoutes } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
 const SESSION_COOKIE = "codex_web_gateway_session";
@@ -107,6 +108,159 @@ function secureHeaders(headers: HeadersInit = {}): Headers {
   result.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
   result.set("cache-control", "no-store");
   return result;
+}
+
+
+type GatewayTurnMetadata = {
+  thread_id?: unknown;
+  turn_id?: unknown;
+  [key: string]: unknown;
+};
+
+function validGatewayIdentity(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{6,128}$/.test(value);
+}
+
+function newGatewayIdentity(prefix: "gw" | "turn"): string {
+  return prefix + "_" + randomBytes(18).toString("hex");
+}
+
+export function addGatewayTurnMetadata(
+  bodyText: string,
+  responseThreads: Map<string, string>,
+): { bodyText: string; threadId: string; metadataHeader: string } {
+  const parsed = JSON.parse(bodyText) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Responses request body must be a JSON object");
+  }
+  const body = parsed as Record<string, unknown>;
+  const clientMetadata = body.client_metadata && typeof body.client_metadata === "object"
+    && !Array.isArray(body.client_metadata)
+    ? { ...(body.client_metadata as Record<string, unknown>) }
+    : {};
+  const rawTurnMetadata = clientMetadata["x-codex-turn-metadata"];
+  let turnMetadata: GatewayTurnMetadata = {};
+  if (typeof rawTurnMetadata === "string") {
+    try {
+      const decoded = JSON.parse(rawTurnMetadata) as unknown;
+      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+        turnMetadata = { ...(decoded as GatewayTurnMetadata) };
+      }
+    } catch {
+      // A generic OpenAI client may not send Codex metadata; the Gateway supplies it.
+    }
+  } else if (rawTurnMetadata && typeof rawTurnMetadata === "object" && !Array.isArray(rawTurnMetadata)) {
+    turnMetadata = { ...(rawTurnMetadata as GatewayTurnMetadata) };
+  }
+
+  const previousResponseId = typeof body.previous_response_id === "string" ? body.previous_response_id : "";
+  const userMetadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+    ? body.metadata as Record<string, unknown>
+    : {};
+  const conversation = body.conversation && typeof body.conversation === "object" && !Array.isArray(body.conversation)
+    ? body.conversation as Record<string, unknown>
+    : {};
+  const requestedThread = turnMetadata.thread_id
+    ?? userMetadata.gateway_thread_id
+    ?? conversation.id
+    ?? body.conversation_id;
+  const threadId = validGatewayIdentity(requestedThread)
+    ? requestedThread
+    : (previousResponseId && responseThreads.get(previousResponseId)) || newGatewayIdentity("gw");
+  const turnId = validGatewayIdentity(turnMetadata.turn_id) ? turnMetadata.turn_id : newGatewayIdentity("turn");
+  turnMetadata.thread_id = threadId;
+  turnMetadata.turn_id = turnId;
+  clientMetadata["x-codex-turn-metadata"] = JSON.stringify(turnMetadata);
+  body.client_metadata = clientMetadata;
+  const metadataHeader = clientMetadata["x-codex-turn-metadata"] as string;
+  return { bodyText: JSON.stringify(body), threadId, metadataHeader };
+}
+
+function rememberResponseId(
+  value: unknown,
+  threadId: string,
+  responseThreads: Map<string, string>,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const payload = value as Record<string, unknown>;
+  const nested = payload.response && typeof payload.response === "object" && !Array.isArray(payload.response)
+    ? payload.response as Record<string, unknown>
+    : undefined;
+  const id = typeof nested?.id === "string"
+    ? nested.id
+    : typeof payload.id === "string" && payload.id.startsWith("resp_")
+      ? payload.id
+      : undefined;
+  if (!id) return;
+  responseThreads.delete(id);
+  responseThreads.set(id, threadId);
+  while (responseThreads.size > 4096) {
+    const oldest = responseThreads.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    responseThreads.delete(oldest);
+  }
+}
+
+async function trackResponseThread(
+  response: Response,
+  threadId: string | undefined,
+  responseThreads: Map<string, string>,
+): Promise<Response> {
+  if (!threadId || !response.body) return response;
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (!contentType.includes("text/event-stream")) {
+    try {
+      rememberResponseId(await response.clone().json(), threadId, responseThreads);
+    } catch {
+      // Error responses and non-JSON responses do not create continuation state.
+    }
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  const inspectLine = (line: string): void => {
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    try {
+      rememberResponseId(JSON.parse(data) as unknown, threadId, responseThreads);
+    } catch {
+      // Ignore malformed/non-JSON SSE records while forwarding bytes unchanged.
+    }
+  };
+  const inspect = (chunk: string): void => {
+    pending += chunk;
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) inspectLine(line);
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const item = await reader.read();
+        if (item.done) {
+          inspect(decoder.decode());
+          if (pending) inspectLine(pending);
+          controller.close();
+          return;
+        }
+        inspect(decoder.decode(item.value, { stream: true }));
+        controller.enqueue(item.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+    },
+  });
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function htmlResponse(html: string): Response {
@@ -355,11 +509,14 @@ export async function runGateway(): Promise<void> {
   const coreServer = startServer(config, { disableSignalHandlers: true });
   const browser = new RemoteLoginBrowser(config);
   const sessions = new Map<string, AdminSession>();
+  const responseThreads = new Map<string, string>();
+  let publicServer!: ReturnType<typeof Bun.serve>;
+  const loginFailures = new Map<string, { count: number; windowStartedAt: number; blockedUntil: number }>();
   let shuttingDown = false;
   let resolveStopped: (() => void) | undefined;
   const stopped = new Promise<void>(resolvePromise => { resolveStopped = resolvePromise; });
 
-  const publicServer = Bun.serve({
+  publicServer = Bun.serve({
     hostname: host,
     port,
     idleTimeout: 0,
@@ -375,6 +532,19 @@ export async function runGateway(): Promise<void> {
 
       if (request.method === "POST" && url.pathname === "/admin/login") {
         if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
+        const clientAddress = publicServer.requestIP(request)?.address ?? "unknown";
+        const now = Date.now();
+        let failures = loginFailures.get(clientAddress);
+        if (!failures || now - failures.windowStartedAt > 15 * 60_000) {
+          failures = { count: 0, windowStartedAt: now, blockedUntil: 0 };
+          loginFailures.set(clientAddress, failures);
+        }
+        if (failures.blockedUntil > now) {
+          return new Response(JSON.stringify({ error: { type: "gateway_error", code: "login_rate_limited", message: "Too many failed login attempts; wait before trying again" } }), {
+            status: 429,
+            headers: secureHeaders({ "content-type": "application/json", "retry-after": String(Math.ceil((failures.blockedUntil - now) / 1000)) }),
+          });
+        }
         let password: unknown;
         try {
           const body = await request.json() as { password?: unknown };
@@ -383,11 +553,18 @@ export async function runGateway(): Promise<void> {
           return jsonError(400, "invalid_json", "Request body must be JSON");
         }
         if (typeof password !== "string" || !constantTimeEqual(adminPassword, password)) {
-          await Bun.sleep(500);
+          failures.count += 1;
+          if (failures.count >= 8) failures.blockedUntil = now + 15 * 60_000;
+          await Bun.sleep(350);
           return jsonError(401, "invalid_credentials", "Invalid administrator password");
         }
+        loginFailures.delete(clientAddress);
+        for (const [token, session] of sessions) {
+          if (session.expiresAt <= now) sessions.delete(token);
+        }
+        if (sessions.size >= 32) return jsonError(429, "too_many_sessions", "Too many administrator sessions are active");
         const token = randomBytes(32).toString("base64url");
-        sessions.set(token, { expiresAt: Date.now() + SESSION_TTL_MS });
+        sessions.set(token, { expiresAt: now + SESSION_TTL_MS });
         return Response.json({ status: "ok" }, {
           headers: secureHeaders({ "set-cookie": cookieHeader(token, secure) }),
         });
@@ -477,24 +654,54 @@ export async function runGateway(): Promise<void> {
         headers.delete("host");
         headers.delete("cookie");
         headers.delete("content-length");
-        let body: ArrayBuffer | undefined;
+        if (request.method === "GET" && url.pathname === "/v1/models") {
+          if (!browserLoginStateExists(config)) {
+            return jsonError(503, "chatgpt_login_required", "Complete ChatGPT Web login in the Gateway admin page first");
+          }
+          const data = availableChatGptWebModelRoutes(config, true).map(route => ({
+            id: route.slug,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "chatgpt-web",
+            display_name: route.displayName,
+          }));
+          return Response.json({ object: "list", data }, { headers: secureHeaders() });
+        }
+
+        let body: BodyInit | undefined;
+        let threadId: string | undefined;
         if (request.method !== "GET" && request.method !== "HEAD") {
-          body = await request.arrayBuffer();
-          if (body.byteLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
+          const rawBody = await request.arrayBuffer();
+          if (rawBody.byteLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
+          if (request.method === "POST" && (url.pathname === "/v1/responses" || url.pathname === "/v1/responses/compact")) {
+            try {
+              const decorated = addGatewayTurnMetadata(new TextDecoder().decode(rawBody), responseThreads);
+              body = decorated.bodyText;
+              threadId = decorated.threadId;
+              headers.set("x-codex-turn-metadata", decorated.metadataHeader);
+              headers.set("content-type", "application/json");
+              headers.delete("content-encoding");
+            } catch (error) {
+              return jsonError(400, "invalid_responses_request", error instanceof Error ? error.message : "Invalid Responses request body");
+            }
+          } else {
+            body = rawBody;
+          }
         }
         const upstreamRequest = new Request("http://127.0.0.1:" + coreServer.port + url.pathname + url.search, {
           method: request.method,
           headers,
-          ...(body ? { body } : {}),
+          ...(body !== undefined ? { body } : {}),
           signal: request.signal,
         });
         try {
           const upstream = await fetch(upstreamRequest);
-          return new Response(upstream.body, {
+          const cleaned = new Response(upstream.body, {
             status: upstream.status,
             statusText: upstream.statusText,
             headers: allowedResponseHeaders(upstream.headers),
           });
+          return await trackResponseThread(cleaned, threadId, responseThreads);
         } catch {
           return jsonError(502, "upstream_unavailable", "The internal Responses service could not be reached");
         }
@@ -519,15 +726,24 @@ export async function runGateway(): Promise<void> {
         headers: { authorization: "Bearer " + config.controlToken },
       });
       const deadline = Date.now() + 30000;
+      let idle = false;
       while (Date.now() < deadline) {
         const health = await fetch("http://127.0.0.1:" + coreServer.port + "/healthz").then(response => response.json() as Promise<Record<string, unknown>>).catch(() => ({}));
-        if (health.active_http_turns === 0 && health.active_browser_turns === 0) break;
+        if (health.active_http_turns === 0 && health.active_browser_turns === 0) {
+          idle = true;
+          break;
+        }
         await Bun.sleep(250);
       }
-      await fetch("http://127.0.0.1:" + coreServer.port + "/admin/shutdown", {
-        method: "POST",
-        headers: { authorization: "Bearer " + config.controlToken },
-      });
+      if (idle) {
+        const response = await fetch("http://127.0.0.1:" + coreServer.port + "/admin/shutdown", {
+          method: "POST",
+          headers: { authorization: "Bearer " + config.controlToken },
+        });
+        if (!response.ok) coreServer.stop(true);
+      } else {
+        coreServer.stop(true);
+      }
     } catch {
       coreServer.stop(true);
     }
