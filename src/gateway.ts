@@ -653,7 +653,9 @@ export async function runGateway(): Promise<void> {
         const declaredLength = Number(request.headers.get("content-length") ?? "0");
         if (declaredLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
         const headers = new Headers(request.headers);
-        headers.delete("authorization");
+        // The core server's control routes use their own generated control token.
+        // The client API key must never be forwarded as an internal control credential.
+        headers.set("authorization", "Bearer " + config.controlToken);
         headers.delete("origin");
         headers.delete("host");
         headers.delete("cookie");
