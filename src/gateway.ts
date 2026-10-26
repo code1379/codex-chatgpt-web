@@ -65,13 +65,9 @@ export function isGatewayBearerAuthorized(header: string | null, apiKey: string)
 
 export function isGatewayApiRoute(method: string, pathname: string): boolean {
   if (method === "GET" && pathname === "/v1/models") return true;
-  if (method === "GET" && pathname === "/v1/responses") return true;
   if (method === "POST" && [
     "/v1/responses",
     "/v1/responses/compact",
-    "/v1/alpha/search",
-    "/v1/images/generations",
-    "/v1/images/edits",
   ].includes(pathname)) return true;
   return false;
 }
@@ -324,6 +320,9 @@ class RemoteLoginBrowser {
       acceptDownloads: false,
       ...(storageState ? { storageState } : {}),
       args: [
+        // The container drops Linux capabilities and sets no-new-privileges; use the
+        // container boundary rather than Chromium's setuid/user-namespace sandbox.
+        "--no-sandbox",
         "--disable-dev-shm-usage",
         "--no-first-run",
         "--no-default-browser-check",
@@ -502,7 +501,8 @@ export async function runGateway(): Promise<void> {
   const config = defaultConfig("browser-only");
   config.host = "127.0.0.1";
   config.port = internalPort;
-  config.headed = true;
+  // The remote login browser is headed under Xvfb; model turns use headless Chromium.
+  config.headed = false;
   config.chromeExecutablePath = process.env.GATEWAY_CHROMIUM_PATH?.trim() || process.env.CHROME_BIN?.trim() || "/usr/bin/chromium";
   markerCapabilities(config);
 
@@ -532,6 +532,8 @@ export async function runGateway(): Promise<void> {
 
       if (request.method === "POST" && url.pathname === "/admin/login") {
         if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
+        const declaredLength = Number(request.headers.get("content-length") ?? "0");
+        if (declaredLength > 4096) return jsonError(413, "request_too_large", "Login request is too large");
         const clientAddress = publicServer.requestIP(request)?.address ?? "unknown";
         const now = Date.now();
         let failures = loginFailures.get(clientAddress);
@@ -615,6 +617,8 @@ export async function runGateway(): Promise<void> {
         if (request.method === "POST" && url.pathname === "/admin/browser/action") {
           let payload: unknown;
           try {
+            const declaredLength = Number(request.headers.get("content-length") ?? "0");
+            if (declaredLength > 16_000) return jsonError(413, "action_too_large", "Browser action is too large");
             const raw = await request.text();
             if (raw.length > 16_000) return jsonError(413, "action_too_large", "Browser action is too large");
             payload = JSON.parse(raw);
