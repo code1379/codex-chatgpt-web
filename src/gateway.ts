@@ -611,7 +611,10 @@ export async function runGateway(): Promise<void> {
         }
         if (request.method === "GET" && url.pathname === "/admin/browser/screenshot") {
           try {
-            return new Response(await browser.screenshot(), {
+            const screenshot = await browser.screenshot();
+            return new Response(new Uint8Array(screenshot), {
+              headers: secureHeaders({ "content-type": "image/png" }),
+            });
               headers: secureHeaders({ "content-type": "image/png" }),
             });
           } catch (error) {
@@ -753,7 +756,7 @@ export async function runGateway(): Promise<void> {
       const deadline = Date.now() + 30000;
       let idle = false;
       while (Date.now() < deadline) {
-        const health = await fetch("http://127.0.0.1:" + coreServer.port + "/healthz").then(response => response.json() as Promise<Record<string, unknown>>).catch(() => ({}));
+        const health: Record<string, unknown> = await fetch("http://127.0.0.1:" + coreServer.port + "/healthz").then(response => response.json() as Promise<Record<string, unknown>>).catch(() => ({} as Record<string, unknown>));
         if (health.active_http_turns === 0 && health.active_browser_turns === 0) {
           idle = true;
           break;
