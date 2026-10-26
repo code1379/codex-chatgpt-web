@@ -968,6 +968,7 @@ export function startServer(
     fetchUpstream?: NativeFetch;
     adapterFactory?: ChatGptWebAdapterFactory;
     modelCatalogFetches?: ModelCatalogFetches;
+    disableSignalHandlers?: boolean;
   } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
@@ -1315,7 +1316,9 @@ export function startServer(
       console.error(`[codex-chatgpt-web] server shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  if (!dependencies.disableSignalHandlers) {
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  }
   return server;
 }
