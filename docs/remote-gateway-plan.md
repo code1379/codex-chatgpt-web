@@ -127,3 +127,45 @@ Conclusion:
 The official Linux installer **installs and auto-launches the Electron desktop application**. It does not install a headless Responses server or a system service. It creates a desktop entry and a user-local launcher, and the application expects a graphical session (a virtual display is enough to start the UI process, but does not by itself provide an interactive login surface to the user).
 
 For the planned VPS gateway, we still need a separate server mode and a safe way to complete ChatGPT login remotely. Installing the official launcher alone does not satisfy the CPA gateway goal.
+
+## Architecture decision: standalone Gateway, optional CPA aggregation (2026-10-27)
+
+The Gateway is an independent model API service. CPA is an optional downstream aggregation/control plane, not a runtime dependency of the Gateway.
+
+### Responsibilities
+
+**Gateway owns:**
+- ChatGPT Web login and persistent browser session.
+- Browser lifecycle, model discovery, model selection and usage/error reporting.
+- Its own authenticated API surface, primarily native Responses + SSE.
+- Independent health/status endpoints and safe admin/login UI.
+- Its own API key(s), configuration and persistent data.
+
+**CPA optionally owns:**
+- Aggregating this Gateway with other providers.
+- Central client API keys, model aliases, routing and failover where supported.
+- Unified client-facing endpoint, usage/log management and provider selection.
+
+Clients may call the Gateway directly when aggregation is not needed. When CPA is used, the intended flow is `client -> CPA -> Gateway`, with the Gateway remaining independently usable and deployable.
+
+### Do not couple Gateway implementation to CPA internals
+
+- The Gateway must not require CPA OAuth files or CPA to launch.
+- Native ChatGPT Web login remains the primary credential mode for using the ChatGPT Web session.
+- A CPA Codex OAuth file contains a different credential type (Codex OAuth tokens), not the browser cookies/local storage used by the Web adapter. Importing it must never be described as restoring a ChatGPT Web browser session.
+- If optional Codex OAuth support is ever added, it is a separate provider/auth mode and should be labelled separately; it is not the Web-session backend.
+- Keep the Gateway API protocol explicit and independently documented. CPA compatibility is an integration test/adapter concern, not a reason to weaken the standalone API contract.
+
+### Standalone API contract
+
+Initial public API target:
+- `GET /healthz` — minimal health only, no sensitive account details.
+- `GET /v1/models` — authenticated, reports only discovered/supported model identifiers.
+- `POST /v1/responses` — authenticated native Responses request, including SSE streaming.
+- Optionally later: `POST /v1/chat/completions` as a separate compatibility adapter, with its supported feature set documented.
+
+The admin/login UI uses a separate authentication/session from the model API key. A security-group rule only makes a port reachable; it does not provide authentication or encryption. For public access, require TLS, strong admin authentication, API bearer authentication, origin/CSRF protections, rate limits, and redaction of credentials from logs. Never expose Chrome DevTools/CDP directly.
+
+### Integration principle
+
+First validate the Gateway API independently using local curl/API tests and a generic Responses client. Then configure CPA's Codex-specific upstream to call it and test actual request metadata, streaming, and conversation continuity. CPA support must not be assumed solely because both sides use a `/v1/responses` path.
