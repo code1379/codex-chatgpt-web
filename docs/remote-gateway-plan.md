@@ -104,3 +104,26 @@ Conclusion:
 - It is **not** a supported headless-server installation flow. The supported Linux lifecycle is owned by the Electron launcher, while terminal-managed service installation is macOS-only.
 - No ChatGPT login was performed and no authenticated Responses request was sent in this smoke test.
 - Direct GitHub asset download from the execution container failed with `curl: (6) Could not resolve host: github.com`; the artifact was instead retrieved from the successful upstream Actions artifact.
+
+## Official Linux launcher installer smoke test (2026-10-27)
+
+### Network constraint and artifact provenance
+
+- The exact remote command `curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh` was attempted in the isolated execution container.
+- It could not download the script because the container cannot resolve `github.com`: `curl: (6) Could not resolve host: github.com`.
+- The v6.1.14 Ubuntu x64 GitHub Actions artifact was retrieved through the GitHub connector. The AppImage SHA-256 computed locally is `59560086b338ce7267df3b29d6347801f11d01b44e8631c644fab3812a886b17`, matching the digest reported by the official GitHub Release API for `codex-web-gpt-6.1.14-linux-x64.AppImage`.
+- The official `scripts/install-launcher.sh` was read from the upstream repository. Because network downloads were unavailable, its Linux installation flow was exercised in an isolated temporary HOME using the verified release AppImage and a local download shim. The auto-launch step was stubbed so the test could inspect installation before separately testing startup.
+
+### Results
+
+- AppImage `--appimage-extract`: pass.
+- Installer flow: pass; installed the AppImage under `~/.local/lib/codex-web-gpt/6.1.14/`, created `~/.local/bin/codex-web-gpt`, extracted the bounded AppImage runner, and wrote `~/.local/share/applications/codex-web-gpt.desktop`.
+- Electron startup under `xvfb-run` as a non-root user: pass in the sense that the process started and exposed a local DevTools endpoint. The app remained running until the 25-second timeout.
+- The app attempted to load `https://chatgpt.com/` but received `ERR_NAME_NOT_RESOLVED` because this environment has no DNS access. No ChatGPT login was attempted.
+- Running the GUI as root failed as expected because Electron refuses root without `--no-sandbox`; the non-root test is the relevant result.
+
+### Conclusion
+
+The official Linux installer **installs and auto-launches the Electron desktop application**. It does not install a headless Responses server or a system service. It creates a desktop entry and a user-local launcher, and the application expects a graphical session (a virtual display is enough to start the UI process, but does not by itself provide an interactive login surface to the user).
+
+For the planned VPS gateway, we still need a separate server mode and a safe way to complete ChatGPT login remotely. Installing the official launcher alone does not satisfy the CPA gateway goal.
