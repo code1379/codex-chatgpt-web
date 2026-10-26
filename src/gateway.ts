@@ -615,8 +615,6 @@ export async function runGateway(): Promise<void> {
             return new Response(new Uint8Array(screenshot), {
               headers: secureHeaders({ "content-type": "image/png" }),
             });
-              headers: secureHeaders({ "content-type": "image/png" }),
-            });
           } catch (error) {
             return jsonError(409, "browser_not_running", error instanceof Error ? error.message : String(error));
           }
