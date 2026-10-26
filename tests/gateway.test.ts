@@ -17,3 +17,35 @@ test("Gateway only proxies its explicit API allowlist", () => {
   expect(isGatewayApiRoute("DELETE", "/v1/responses")).toBe(false);
   expect(isGatewayApiRoute("GET", "/v1/unknown")).toBe(false);
 });
+
+test("Gateway supplies native Codex turn metadata for generic Responses clients", async () => {
+  const { addGatewayTurnMetadata } = await import("../src/gateway");
+  const threads = new Map<string, string>();
+  const first = addGatewayTurnMetadata(JSON.stringify({
+    model: "chatgpt-web/gpt-5.6-sol",
+    input: "hello",
+    stream: true,
+  }), threads);
+  const firstBody = JSON.parse(first.bodyText);
+  const firstMetadata = JSON.parse(firstBody.client_metadata["x-codex-turn-metadata"]);
+  expect(firstMetadata.thread_id).toBe(first.threadId);
+  expect(firstMetadata.turn_id).toMatch(/^turn_[a-f0-9]{36}$/);
+  expect(first.metadataHeader).toBe(firstBody.client_metadata["x-codex-turn-metadata"]);
+
+  threads.set("resp_test_123", first.threadId);
+  const second = addGatewayTurnMetadata(JSON.stringify({
+    model: "chatgpt-web/gpt-5.6-sol",
+    previous_response_id: "resp_test_123",
+    input: "continue",
+  }), threads);
+  const secondBody = JSON.parse(second.bodyText);
+  const secondMetadata = JSON.parse(secondBody.client_metadata["x-codex-turn-metadata"]);
+  expect(second.threadId).toBe(first.threadId);
+  expect(secondMetadata.turn_id).not.toBe(firstMetadata.turn_id);
+});
+
+test("Gateway rejects malformed or non-object Responses JSON", async () => {
+  const { addGatewayTurnMetadata } = await import("../src/gateway");
+  expect(() => addGatewayTurnMetadata("{", new Map())).toThrow();
+  expect(() => addGatewayTurnMetadata("[]", new Map())).toThrow("Responses request body must be a JSON object");
+});
