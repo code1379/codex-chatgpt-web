@@ -376,7 +376,7 @@ class RemoteLoginBrowser {
       if (typeof action.text !== "string" || action.text.length > 2000) throw new Error("Text input is invalid or too long");
       await page.keyboard.type(action.text);
     } else if (action.type === "press") {
-      if (typeof action.key !== "string" || !/^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|Control\\+A|Control\\+C|Control\\+V|Control\\+X|Control\\+Z|Shift\\+Tab)$/.test(action.key)) {
+      if (typeof action.key !== "string" || !/^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|Control\+A|Control\+C|Control\+V|Control\+X|Control\+Z|Shift\+Tab)$/.test(action.key)) {
         throw new Error("Keyboard shortcut is not allowed");
       }
       await page.keyboard.press(action.key);
