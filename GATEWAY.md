@@ -23,10 +23,10 @@ Implemented in this branch:
 2. Copy `.env.gateway.example` to `.env`.
 3. Set `GATEWAY_API_KEY` and `GATEWAY_ADMIN_PASSWORD` to unique strong values. Do not reuse CPA management credentials.
 4. Put a valid TLS certificate and key in `./certs/fullchain.pem` and `./certs/privkey.pem`, or set `GATEWAY_CERT_DIR`, `GATEWAY_TLS_CERT_FILE`, and `GATEWAY_TLS_KEY_FILE` to your certificate paths.
-5. In 1Panel, create a Compose project from `docker-compose.gateway.yml`; use port 17840. Keep internal port 17841 unpublished.
-6. Restrict the cloud security-group rule for 17840 to your own public IP if possible. A port allow-rule does not replace HTTPS or authentication.
-7. Open `https://YOUR_SERVER_OR_DOMAIN:17840/`, log in with `GATEWAY_ADMIN_PASSWORD`, choose Start browser, sign in to ChatGPT, return to `chatgpt.com`, and click Save session.
-8. Call `https://YOUR_SERVER_OR_DOMAIN:17840/v1/models` with `GATEWAY_API_KEY`. Test `POST /v1/responses` before connecting CPA.
+5. In 1Panel, create a Compose project from `docker-compose.gateway.yml`. By default, port 17840 is published on `127.0.0.1` only; port 17841 is never published.
+6. For a temporary test, keep the public port closed and use an SSH tunnel or a 1Panel reverse proxy with HTTPS. If you choose to publish 17840 directly, first configure TLS certificates, set `GATEWAY_BIND_IP=127.0.0.1`, remove `GATEWAY_ALLOW_INSECURE_HTTP`, and verify the HTTPS endpoint. Restrict the cloud security-group rule to your own public IP. Do not expose plain HTTP with admin/browser controls.
+7. Open the secured URL, log in with `GATEWAY_ADMIN_PASSWORD`, choose Start browser, sign in to ChatGPT, return to `chatgpt.com`, and click Save session.
+8. Call `/v1/models` with `GATEWAY_API_KEY`. Test `POST /v1/responses` before connecting CPA.
 
 ## API
 
