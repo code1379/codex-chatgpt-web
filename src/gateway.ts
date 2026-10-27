@@ -736,6 +736,9 @@ export async function runGateway(): Promise<void> {
         // The core server's control routes use their own generated control token.
         // The client API key must never be forwarded as an internal control credential.
         headers.set("authorization", "Bearer " + config.controlToken);
+        if (request.method === "POST" && (url.pathname === "/v1/responses" || url.pathname === "/v1/responses/compact")) {
+          headers.set("x-gateway-api-client", "generic-responses");
+        }
         headers.delete("origin");
         headers.delete("host");
         headers.delete("cookie");
