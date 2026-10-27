@@ -19,8 +19,8 @@ Implemented in this branch:
 
 ## Docker / 1Panel
 
-1. Upload this repository branch to the VPS or clone it there.
-2. Copy `.env.gateway.example` to `.env`.
+1. The Gateway image is built by GitHub Actions and published to `ghcr.io/code1379/codex-chatgpt-web-gateway:gateway-latest`. Set the GitHub Container Registry package visibility to **Public** after the first successful publish so 1Panel can pull it without a registry login. The VPS does not need to clone source code or build the image.
+2. Download `docker-compose.gateway.yml` and `.env.gateway.example` from the `feat/remote-gateway` branch into the same 1Panel Compose project directory. Copy `.env.gateway.example` to `.env`.
 3. Set `GATEWAY_API_KEY` and `GATEWAY_ADMIN_PASSWORD` to unique strong values. Do not reuse CPA management credentials.
 4. Put a valid TLS certificate and key in `./certs/fullchain.pem` and `./certs/privkey.pem`, or set `GATEWAY_CERT_DIR`, `GATEWAY_TLS_CERT_FILE`, and `GATEWAY_TLS_KEY_FILE` to your certificate paths.
 5. In 1Panel, create a Compose project from `docker-compose.gateway.yml`. By default, port 17840 is published on `127.0.0.1` only; port 17841 is never published.
@@ -57,10 +57,11 @@ curl -sS https://YOUR_SERVER_OR_DOMAIN:17840/v1/models \
 The Compose project uses Docker host networking and binds the Gateway listener directly to VPS loopback `127.0.0.1:17840`; the internal Responses core binds to `127.0.0.1:17841`. Neither port is exposed on the public interface. The Compose file enables trusted-proxy handling for the 1Panel/OpenResty HTTPS terminator.
 
 1. Add a DNS A record for `gateway.ohmygod.qzz.io` pointing to your VPS. Cloudflare orange-cloud DNS-over-HTTPS should return Cloudflare edge IPs; a local `dig` result in `198.18.0.0/15` can be a proxy Fake-IP.
-2. Create the Compose project from this branch and set strong unique values in `.env`. Do not open TCP/17840 or TCP/17841 in the cloud security group. With host networking, both listeners bind only to VPS loopback.
+2. Create the Compose project using the image-based `docker-compose.gateway.yml` and set strong unique values in `.env`. Do not open TCP/17840 or TCP/17841 in the cloud security group. With host networking, both listeners bind only to VPS loopback.
 3. In 1Panel, create a Website for the subdomain and enable HTTPS with a valid certificate.
 4. Set the website's reverse proxy target to `http://127.0.0.1:17840`. Preserve the original Host header and pass `X-Forwarded-Proto: https`.
 5. Visit `https://your-subdomain/`. Log in with `GATEWAY_ADMIN_PASSWORD`, start the browser, complete ChatGPT sign-in, then save the session.
-6. Verify `https://your-subdomain/healthz`, then call `GET /v1/models` using `GATEWAY_API_KEY`. Do not connect CPA until these pass.
+6. Verify `https://gateway.ohmygod.qzz.io/healthz`, then call `GET /v1/models` using `GATEWAY_API_KEY`. Do not connect CPA until these pass.
+7. For updates, use 1Panel to pull/recreate the container using the same Compose file. The `pull_policy: always` setting makes Compose check the published `gateway-latest` image. For a reproducible rollback, change the image tag to a specific `sha-<commit>` tag.
 
 Do not use `GATEWAY_ALLOW_INSECURE_HTTP=true` with a publicly bound port. With this recommended topology, the public TLS terminates at 1Panel and the backend HTTP socket remains loopback-only.
