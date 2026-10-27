@@ -1,0 +1,47 @@
+# Paste this file directly into a new 1Panel Compose project.
+# Replace both secret placeholders before deploying. Keep the ports on loopback.
+services:
+  chatgpt-web-gateway:
+    image: ghcr.io/code1379/codex-chatgpt-web-gateway:gateway-latest
+    pull_policy: always
+    container_name: chatgpt-web-gateway
+    restart: unless-stopped
+    environment:
+      CODEX_CHATGPT_WEB_HOME: /data
+      GATEWAY_CHROMIUM_PATH: /usr/bin/chromium
+      GATEWAY_HOST: 127.0.0.1
+      GATEWAY_PORT: "17840"
+      GATEWAY_INTERNAL_PORT: "17841"
+      GATEWAY_TRUST_PROXY: "true"
+      GATEWAY_ALLOW_INSECURE_HTTP: "false"
+      GATEWAY_TLS_CERT_FILE: ""
+      GATEWAY_TLS_KEY_FILE: ""
+      GATEWAY_API_KEY: "REPLACE_WITH_A_UNIQUE_RANDOM_API_KEY_AT_LEAST_32_CHARS"
+      GATEWAY_ADMIN_PASSWORD: "REPLACE_WITH_A_UNIQUE_ADMIN_PASSWORD_AT_LEAST_16_CHARS"
+    command:
+      - sh
+      - -lc
+      - exec xvfb-run -a bun run src/cli.ts gateway
+    network_mode: host
+    volumes:
+      - gateway-data:/data
+    shm_size: "1gb"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  gateway-data:
