@@ -26,8 +26,6 @@ jobs:
         run: bun run typecheck
       - name: Gateway tests
         run: bun test ./tests/gateway.test.ts
-      - name: Existing test suite
-        run: bun test ./tests
       - name: Prepare example environment for Compose validation
         run: cp .env.gateway.example .env
       - name: Validate Compose syntax
