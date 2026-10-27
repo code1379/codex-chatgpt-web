@@ -1,12 +1,13 @@
 name: Gateway prototype checks
 
+concurrency:
+  group: gateway-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
       - feat/remote-gateway
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
