@@ -788,7 +788,14 @@ export async function responseRequest(
   else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const run = async () => {
     try {
+      const genericGatewayRequest = req.headers.get("x-gateway-api-client") === "generic-responses";
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
+        // The Codex adapter emits this explanatory commentary before starting a browser turn.
+        // It is useful in Codex UI, but it is not a model answer and must not leak into a generic API response.
+        if (genericGatewayRequest
+          && event.type === "text_delta"
+          && event.phase === "commentary"
+          && event.text.startsWith("> **Local tools unavailable**")) return;
         options.onAdapterEvent?.(event);
         queue.push(event);
       });
