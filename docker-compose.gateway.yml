@@ -18,8 +18,7 @@ services:
       GATEWAY_ALLOW_INSECURE_HTTP: "false"
     command:
       - sh
-      - -lc
-      - exec xvfb-run -a bun run src/cli.ts gateway
+      - ./scripts/start-gateway-container.sh
     network_mode: host
     volumes:
       - gateway-data:/data
