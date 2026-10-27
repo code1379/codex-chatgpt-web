@@ -28,6 +28,7 @@ services:
       - "${GATEWAY_BIND_IP:-127.0.0.1}:17840:17840"
     volumes:
       - gateway-data:/data
+      - ${GATEWAY_CERT_DIR:-./certs}:/certs:ro
     shm_size: "1gb"
     security_opt:
       - no-new-privileges:true
