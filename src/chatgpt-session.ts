@@ -13,6 +13,24 @@ export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
   'button[data-codex-intelligence-trigger="true"][data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
 ].join(", ");
+
+const CHATGPT_EFFORT_CONTROL_FALLBACK_TEXT = /(?:GPT[- ]?6(?:\.1)?|GPT[- ]?5\.6|Luna|Think|Instant|Medium|High|Extra High|Pro|即时|中|高|额外高|思考)/i;
+
+export async function chatGptEffortControlForComposer(page: Page, composer: Locator): Promise<Locator> {
+  const form = composer.locator("xpath=ancestor::form[1]");
+  const exact = form.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+  const exactCount = await exact.count().catch(() => 0);
+  if (exactCount === 1) return exact;
+  if (exactCount > 1) throw new Error("ChatGPT composer exposes multiple known model/effort controls");
+
+  const candidates = page.locator('button[aria-haspopup="menu"], button[data-testid*="model"], button[data-testid*="intelligence"]')
+    .filter({ visible: true })
+    .filter({ hasText: CHATGPT_EFFORT_CONTROL_FALLBACK_TEXT });
+  const count = await candidates.count().catch(() => 0);
+  if (count === 1) return candidates;
+  if (count > 1) throw new Error("ChatGPT page exposes multiple text-matched model/effort controls");
+  throw new Error("ChatGPT model/effort control was not found in the current composer");
+}
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
@@ -317,41 +335,39 @@ export async function waitForChatGptEffortControl(
   options: ChatGptCapabilityProbeOptions = {},
 ): Promise<Locator | undefined> {
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
-  const composer = composers;
-  const composerForm = composer.locator("xpath=ancestor::form[1]");
-  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
   const deadline = Date.now() + (options.selectorTimeoutMs ?? 30_000);
   const stableAbsenceMs = options.stableAbsenceMs ?? 3_000;
   let absenceSince: number | undefined;
   let presenceObservations = 0;
   while (true) {
     options.signal?.throwIfAborted();
-    const effortVisible = await effortButton.isVisible();
-    options.signal?.throwIfAborted();
-    if (effortVisible) {
-      presenceObservations += 1;
-      absenceSince = undefined;
-      if (presenceObservations >= 2) return effortButton;
-      await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
-      continue;
+    const composerCount = await composers.count().catch(() => 0);
+    if (composerCount === 1) {
+      try {
+        const control = await chatGptEffortControlForComposer(page, composers);
+        if (await control.isVisible()) {
+          presenceObservations += 1;
+          absenceSince = undefined;
+          if (presenceObservations >= 2) return control;
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+          continue;
+        }
+      } catch {
+        // Wait for hydration; only a stable, fully loaded composer without a control means Luna-only.
+      }
     }
     presenceObservations = 0;
-    const composerReady = await composers.count().then(count => count === 1).catch(() => false);
-    const formReady = await composerForm.count().then(count => count === 1).catch(() => false);
+    const formReady = composerCount === 1
+      && await composers.locator("xpath=ancestor::form[1]").count().then(count => count === 1).catch(() => false);
     const documentReady = await page.evaluate(() => document.readyState === "complete").catch(() => false);
-    if (composerReady && formReady && documentReady) {
-      absenceSince ??= Date.now();
-    } else {
-      absenceSince = undefined;
-    }
+    if (formReady && documentReady) absenceSince ??= Date.now();
+    else absenceSince = undefined;
     if (Date.now() >= deadline) {
-      // ChatGPT can mount a usable composer before the account's model list arrives.
-      // A short absence is not a capability result; use the complete inspection budget.
       if (absenceSince !== undefined && Date.now() - absenceSince >= stableAbsenceMs) {
         options.signal?.throwIfAborted();
         return undefined;
       }
-      throw new Error("ChatGPT account capability probe did not reach a stable composer state");
+      throw new Error("ChatGPT account capability probe did not reach a stable model-control state");
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
   }

@@ -788,7 +788,14 @@ export async function responseRequest(
   else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const run = async () => {
     try {
+      const genericGatewayRequest = req.headers.get("x-gateway-api-client") === "generic-responses";
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
+        // The Codex adapter emits this explanatory commentary before starting a browser turn.
+        // It is useful in Codex UI, but it is not a model answer and must not leak into a generic API response.
+        if (genericGatewayRequest
+          && event.type === "text_delta"
+          && event.phase === "commentary"
+          && event.text.startsWith("> **Local tools unavailable**")) return;
         options.onAdapterEvent?.(event);
         queue.push(event);
       });
@@ -968,6 +975,7 @@ export function startServer(
     fetchUpstream?: NativeFetch;
     adapterFactory?: ChatGptWebAdapterFactory;
     modelCatalogFetches?: ModelCatalogFetches;
+    disableSignalHandlers?: boolean;
   } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
@@ -1315,7 +1323,9 @@ export function startServer(
       console.error(`[codex-chatgpt-web] server shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  if (!dependencies.disableSignalHandlers) {
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  }
   return server;
 }
