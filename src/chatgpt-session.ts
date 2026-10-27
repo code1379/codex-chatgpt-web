@@ -352,8 +352,13 @@ export async function waitForChatGptEffortControl(
           await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
           continue;
         }
-      } catch {
-        // Wait for hydration; only a stable, fully loaded composer without a control means Luna-only.
+      } catch (error) {
+        // A missing selector can be hydration delay. Ambiguous controls and failed observations
+        // are not evidence of a Luna-only account and must remain visible to the caller.
+        if (!(error instanceof Error)
+          || error.message !== "ChatGPT model/effort control was not found in the current composer") {
+          throw error;
+        }
       }
     }
     presenceObservations = 0;

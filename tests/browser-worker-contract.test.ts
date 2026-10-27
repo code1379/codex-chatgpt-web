@@ -2911,6 +2911,7 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
   const effortControl = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 1,
     waitFor: async () => await neverVisible,
   };
   const composerForm = { locator: () => effortControl };
@@ -2963,6 +2964,7 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
   const effortControl = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 1,
     waitFor: async () => {},
     getAttribute: async () => "true",
   };
