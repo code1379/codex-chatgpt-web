@@ -15,7 +15,15 @@ services:
       GATEWAY_INTERNAL_PORT: 17841
       GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-}
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-}
-      GATEWAY_ALLOW_INSECURE_HTTP: "true"
+      GATEWAY_ALLOW_INSECURE_HTTP: ${GATEWAY_ALLOW_INSECURE_HTTP:-false}
+    command:
+      - sh
+      - -lc
+      - |
+        if [ "$$GATEWAY_BIND_IP" = "127.0.0.1" ] && [ -z "$$GATEWAY_TLS_CERT_FILE" ] && [ -z "$$GATEWAY_TLS_KEY_FILE" ]; then
+          export GATEWAY_ALLOW_INSECURE_HTTP=true
+        fi
+        exec xvfb-run -a bun run src/cli.ts gateway
     ports:
       - "${GATEWAY_BIND_IP:-127.0.0.1}:17840:17840"
     volumes:
@@ -32,7 +40,7 @@ services:
     tmpfs:
       - /tmp:size=512m,mode=1777
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:17840/healthz >/dev/null || curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
