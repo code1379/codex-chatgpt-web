@@ -187,7 +187,12 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
   const effortButton = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     isVisible: async () => false,
+  };
+  const fallbackButtons = {
+    filter() { return this; },
+    count: async () => 0,
   };
   const composerForm = {
     count: async () => 1,
@@ -201,7 +206,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
     locator: () => composerForm,
   };
   const page = {
-    locator: () => composer,
+    locator: (selector: string) => selector === CHATGPT_COMPOSER_SELECTOR ? composer : fallbackButtons,
     evaluate: async () => true,
   };
 
