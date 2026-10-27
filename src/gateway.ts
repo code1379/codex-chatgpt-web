@@ -1,11 +1,12 @@
 import { timingSafeEqual, randomBytes } from "node:crypto";
+import { createConnection, type Socket } from "node:net";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import {
   atomicWriteFile,
@@ -35,8 +36,54 @@ const SESSION_COOKIE = "codex_web_gateway_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 const VIEWPORT = { width: 1365, height: 900 };
+const NOVNC_ROOT = process.env.GATEWAY_NOVNC_ROOT?.trim() || "/usr/share/novnc";
+const VNC_PORT = 5900;
 
 type AdminSession = { expiresAt: number };
+type GatewayVncSocketData = { socket?: Socket; closing?: boolean };
+
+function noVncContentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case ".html": return "text/html; charset=utf-8";
+    case ".js": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".json": return "application/json; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".gif": return "image/gif";
+    case ".ico": return "image/x-icon";
+    case ".woff": return "font/woff";
+    case ".woff2": return "font/woff2";
+    case ".ttf": return "font/ttf";
+    case ".wasm": return "application/wasm";
+    default: return "application/octet-stream";
+  }
+}
+
+function noVncAssetResponse(relativePath: string): Response {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(relativePath);
+  } catch {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  if (!decoded || decoded.includes(String.fromCharCode(0)) || decoded.includes(String.fromCharCode(92)) || decoded.startsWith("/")) {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  const root = resolve(NOVNC_ROOT);
+  const filePath = resolve(root, decoded);
+  if (filePath !== root && !filePath.startsWith(root + sep)) {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  if (!existsSync(filePath)) return new Response("Not found", { status: 404 });
+  try {
+    const headers = secureHeaders({ "content-type": noVncContentType(filePath) });
+    headers.set("x-frame-options", "SAMEORIGIN");
+    return new Response(readFileSync(filePath), { headers });
+  } catch {
+    return new Response("Not found", { status: 404 });
+  }
+}
 
 function requiredSecret(name: string, minimumLength: number): string {
   const value = process.env[name]?.trim() ?? "";
@@ -664,11 +711,38 @@ export async function runGateway(): Promise<void> {
   let resolveStopped: (() => void) | undefined;
   const stopped = new Promise<void>(resolvePromise => { resolveStopped = resolvePromise; });
 
-  publicServer = Bun.serve({
+  publicServer = Bun.serve<GatewayVncSocketData>({
     hostname: host,
     port,
     idleTimeout: 0,
     ...(tls ? { tls } : {}),
+    websocket: {
+      open(ws) {
+        const socket = createConnection({ host: "127.0.0.1", port: VNC_PORT });
+        ws.data.socket = socket;
+        socket.on("data", chunk => {
+          if (ws.readyState === 1) ws.send(chunk);
+        });
+        socket.on("error", () => {
+          if (ws.readyState === 1) ws.close(1011, "VNC backend unavailable");
+        });
+        socket.on("close", () => {
+          if (ws.readyState === 1) ws.close(1000, "VNC backend closed");
+        });
+      },
+      message(ws, message) {
+        const socket = ws.data.socket;
+        if (!socket || socket.destroyed) {
+          ws.close(1011, "VNC backend unavailable");
+          return;
+        }
+        socket.write(Buffer.from(message));
+      },
+      close(ws) {
+        ws.data.closing = true;
+        ws.data.socket?.destroy();
+      },
+    },
     async fetch(request) {
       const url = new URL(request.url);
       const externalUrl = effectiveRequestUrl(request);
@@ -738,6 +812,24 @@ export async function runGateway(): Promise<void> {
         if (!adminToken) return jsonError(401, "admin_auth_required", "Administrator login required");
         if (request.method !== "GET" && !originIsSame(request)) {
           return jsonError(403, "origin_rejected", "Administrative requests must be same-origin");
+        }
+        if (request.method === "GET" && url.pathname === "/admin/novnc") {
+          return new Response(null, {
+            status: 302,
+            headers: secureHeaders({
+              location: "/admin/novnc/vnc.html?autoconnect=true&resize=scale&path=admin/vnc&reconnect=true&reconnect_delay=1000",
+            }),
+          });
+        }
+        if (request.method === "GET" && url.pathname.startsWith("/admin/novnc/")) {
+          return noVncAssetResponse(url.pathname.slice("/admin/novnc/".length));
+        }
+        if (request.method === "GET" && url.pathname === "/admin/vnc") {
+          if (!originIsSame(request)) return jsonError(403, "origin_rejected", "VNC connection must be same-origin");
+          if (!publicServer.upgrade(request, { data: { closing: false } })) {
+            return jsonError(400, "vnc_upgrade_failed", "Could not upgrade the VNC WebSocket connection");
+          }
+          return;
         }
         if (request.method === "GET" && url.pathname === "/admin/status") {
           return Response.json({
