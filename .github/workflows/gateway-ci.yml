@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - feat/remote-gateway
+      - feat/shared-gateway-browser-context
   workflow_dispatch:
 
 permissions:
