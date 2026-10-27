@@ -44,6 +44,42 @@ test("Gateway supplies native Codex turn metadata for generic Responses clients"
   expect(secondMetadata.turn_id).not.toBe(firstMetadata.turn_id);
 });
 
+test("Gateway normalizes generic string input into a current-turn user message", async () => {
+  const { addGatewayTurnMetadata } = await import("../src/gateway");
+  const result = addGatewayTurnMetadata(JSON.stringify({
+    model: "chatgpt-web/gpt-5.6-sol",
+    input: "hello from a generic Responses client",
+    stream: true,
+  }), new Map());
+  const body = JSON.parse(result.bodyText);
+  expect(body.input).toHaveLength(1);
+  expect(body.input[0].type).toBe("message");
+  expect(body.input[0].role).toBe("user");
+  expect(body.input[0].content).toBe("hello from a generic Responses client");
+  expect(body.input[0].internal_chat_message_metadata_passthrough.turn_id).toBe(
+    JSON.parse(body.client_metadata["x-codex-turn-metadata"]).turn_id,
+  );
+});
+
+test("Gateway annotates the latest user message in array input without rewriting history", async () => {
+  const { addGatewayTurnMetadata } = await import("../src/gateway");
+  const result = addGatewayTurnMetadata(JSON.stringify({
+    model: "chatgpt-web/gpt-5.6-sol",
+    input: [
+      { type: "message", role: "user", content: "old message", internal_chat_message_metadata_passthrough: { turn_id: "turn_old" } },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "old reply" }] },
+      { type: "message", role: "user", content: "current message" },
+    ],
+    stream: true,
+  }), new Map());
+  const body = JSON.parse(result.bodyText);
+  const metadata = JSON.parse(body.client_metadata["x-codex-turn-metadata"]);
+  expect(body.input).toHaveLength(3);
+  expect(body.input[0].internal_chat_message_metadata_passthrough.turn_id).toBe("turn_old");
+  expect(body.input[2].internal_chat_message_metadata_passthrough.turn_id).toBe(metadata.turn_id);
+  expect(body.input[2].content).toBe("current message");
+});
+
 test("Gateway rejects malformed or non-object Responses JSON", async () => {
   const { addGatewayTurnMetadata } = await import("../src/gateway");
   expect(() => addGatewayTurnMetadata("{", new Map())).toThrow();
