@@ -50,3 +50,17 @@ curl -sS https://YOUR_SERVER_OR_DOMAIN:17840/v1/models \
 - Never publish port 17841. Never expose Chromium DevTools/CDP.
 - The first version is experimental: verify login state persistence, model catalog, Responses streaming, cancellation, and CPA Codex-upstream metadata before relying on it.
 - No CPA OAuth file is required. A CPA Codex OAuth file is not a ChatGPT browser session and is not imported by this Gateway.
+
+
+### 1Panel domain + HTTPS reverse proxy (recommended)
+
+The Compose project publishes the Gateway only on the VPS loopback address `127.0.0.1:17840`; it does not publish the internal Responses core at `17841`. The Compose file enables trusted-proxy handling, but the Gateway trusts forwarded scheme headers only when the TCP peer is a loopback address.
+
+1. In 1Panel, add a DNS A record for a subdomain you control, pointing to this VPS.
+2. Create the Compose project from this branch and set strong unique values in `.env`. Keep `GATEWAY_BIND_IP=127.0.0.1`. Do not open TCP/17840 in the cloud security group.
+3. In 1Panel, create a Website for the subdomain and enable HTTPS with a valid certificate.
+4. Set the website's reverse proxy target to `http://127.0.0.1:17840`. Keep the original Host header and pass `X-Forwarded-Proto: https` (1Panel/OpenResty commonly does this by default).
+5. Visit `https://your-subdomain/`. Log in with `GATEWAY_ADMIN_PASSWORD`, start the browser, complete ChatGPT sign-in, then save the session.
+6. Verify `https://your-subdomain/healthz`, then call `GET /v1/models` using `GATEWAY_API_KEY`. Do not connect CPA until these pass.
+
+Do not use `GATEWAY_ALLOW_INSECURE_HTTP=true` with a publicly bound port. With this recommended topology, the public TLS terminates at 1Panel and the backend HTTP socket remains loopback-only.
