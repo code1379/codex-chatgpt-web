@@ -430,18 +430,34 @@ class RemoteLoginBrowser {
     await assertAuthenticatedChatGptPage(page);
     const state = sanitizeBrowserLoginStorageState(await context.storageState());
     if (state.cookies.length === 0) throw new Error("No ChatGPT/OpenAI session cookies were found; sign-in was not saved");
-    let capabilities = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
-    // Probe in a temporary tab so saving does not move focus on the user's active page.
+    // Keep the last verified capability snapshot unless a fresh probe confirms a change.
+    let capabilities = {
+      solAvailable: this.config.solAvailable,
+      extraHighAvailable: this.config.solAvailable && this.config.extraHighAvailable === true,
+      proAvailable: this.config.solAvailable && this.config.proAvailable,
+    };
     let probePage: Page | undefined;
     try {
+      // A fresh tab can hydrate the ChatGPT composer more slowly than the existing login tab.
+      // Wait for the model/effort controls to settle before treating their absence as a capability result.
       probePage = await context.newPage();
       await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
       await assertAuthenticatedChatGptPage(probePage);
-      capabilities = await detectChatGptAccountCapabilities(probePage, { selectorTimeoutMs: 10000, stableAbsenceMs: 2000 });
+      capabilities = await detectChatGptAccountCapabilities(probePage, { selectorTimeoutMs: 30000, stableAbsenceMs: 12000 });
     } catch {
-      // A successful login remains useful even if the model-picker capability probe times out.
+      // A failed temporary-tab probe must not overwrite a previously verified capability snapshot.
     } finally {
       if (probePage && !probePage.isClosed()) await probePage.close().catch(() => {});
+    }
+    if (!capabilities.solAvailable) {
+      // Recovery fallback: inspect the already-loaded authenticated page, which may have hydrated
+      // the account's model controls even when a new tab did not.
+      try {
+        const fallback = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 15000, stableAbsenceMs: 5000 });
+        if (fallback.solAvailable) capabilities = fallback;
+      } catch {
+        // Preserve the last known capability snapshot if both probes are inconclusive.
+      }
     }
     atomicWriteFile(this.config.storageStatePath, JSON.stringify(state) + "\n", { mode: 0o600 });
     atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
