@@ -16,14 +16,19 @@ function messageText(item: Record<string, unknown>): string | undefined {
 
 /** Native compaction remains part of the exact identity of a replayed Codex turn. */
 function compactionEpoch(input: unknown[] | undefined): unknown {
-  return input?.findLast(item => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  if (!input) return null;
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    const item = input[index];
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const record = item as Record<string, unknown>;
-    return record.type === "compaction"
+    if (record.type === "compaction"
       || record.type === "compaction_summary"
       || record.type === "context_compaction"
-      || (record.role === "user" && messageText(record)?.startsWith(`${SUMMARY_PREFIX}\n`));
-  }) ?? null;
+      || (record.role === "user" && messageText(record)?.startsWith(`${SUMMARY_PREFIX}\n`))) {
+      return item;
+    }
+  }
+  return null;
 }
 
 export function chatGptConversationKey(
@@ -47,7 +52,13 @@ export function chatGptConversationKey(
 export function retainedConversationResumeRequest(
   parsed: CodexParsedRequest,
 ): CodexParsedRequest | undefined {
-  const lastAssistant = parsed.context.messages.findLastIndex(message => message.role === "assistant");
+  let lastAssistant = -1;
+  for (let index = parsed.context.messages.length - 1; index >= 0; index -= 1) {
+    if (parsed.context.messages[index]?.role === "assistant") {
+      lastAssistant = index;
+      break;
+    }
+  }
   if (lastAssistant < 0 || lastAssistant === parsed.context.messages.length - 1) return undefined;
   return {
     ...parsed,
