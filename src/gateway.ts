@@ -82,11 +82,30 @@ function cookieValue(request: Request, name: string): string | undefined {
   return undefined;
 }
 
-function originIsSame(request: Request): boolean {
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase().replace(/^::ffff:/, "");
+  return normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function effectiveRequestUrl(request: Request, remoteAddress?: string): URL {
+  const url = new URL(request.url);
+  // Trust forwarded scheme only when the connection itself came from a loopback proxy.
+  // This is needed when 1Panel/OpenResty terminates HTTPS and proxies to local HTTP.
+  if (process.env.GATEWAY_TRUST_PROXY === "true" && isLoopbackAddress(remoteAddress)) {
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+    if (forwardedProto === "https" || forwardedProto === "http") {
+      url.protocol = forwardedProto + ":";
+    }
+  }
+  return url;
+}
+
+function originIsSame(request: Request, remoteAddress?: string): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return false;
   try {
-    return new URL(origin).origin === new URL(request.url).origin;
+    return new URL(origin).origin === effectiveRequestUrl(request, remoteAddress).origin;
   } catch {
     return false;
   }
@@ -527,7 +546,9 @@ export async function runGateway(): Promise<void> {
     ...(tls ? { tls } : {}),
     async fetch(request) {
       const url = new URL(request.url);
-      const secure = url.protocol === "https:" || Boolean(tls);
+      const remoteAddress = publicServer.requestIP(request)?.address;
+      const externalUrl = effectiveRequestUrl(request, remoteAddress);
+      const secure = externalUrl.protocol === "https:" || Boolean(tls);
       if (request.method === "GET" && url.pathname === "/healthz") {
         return Response.json({ status: "ok", service: "codex-chatgpt-web-gateway", version: VERSION }, {
           headers: secureHeaders(),
@@ -535,7 +556,7 @@ export async function runGateway(): Promise<void> {
       }
 
       if (request.method === "POST" && url.pathname === "/admin/login") {
-        if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
+        if (!originIsSame(request, remoteAddress)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
         const declaredLength = Number(request.headers.get("content-length") ?? "0");
         if (declaredLength > 4096) return jsonError(413, "request_too_large", "Login request is too large");
         const clientAddress = publicServer.requestIP(request)?.address ?? "unknown";
@@ -582,7 +603,7 @@ export async function runGateway(): Promise<void> {
       }
 
       if (request.method === "POST" && url.pathname === "/admin/logout") {
-        if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Logout request must be same-origin");
+        if (!originIsSame(request, remoteAddress)) return jsonError(403, "origin_rejected", "Logout request must be same-origin");
         const token = sessionFromRequest(request, sessions);
         if (token) sessions.delete(token);
         return Response.json({ status: "ok" }, { headers: secureHeaders({ "set-cookie": clearCookieHeader(secure) }) });
@@ -591,7 +612,7 @@ export async function runGateway(): Promise<void> {
       const adminToken = sessionFromRequest(request, sessions);
       if (url.pathname.startsWith("/admin/")) {
         if (!adminToken) return jsonError(401, "admin_auth_required", "Administrator login required");
-        if (request.method !== "GET" && !originIsSame(request)) {
+        if (request.method !== "GET" && !originIsSame(request, remoteAddress)) {
           return jsonError(403, "origin_rejected", "Administrative requests must be same-origin");
         }
         if (request.method === "GET" && url.pathname === "/admin/status") {
