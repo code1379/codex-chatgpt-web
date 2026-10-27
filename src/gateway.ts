@@ -23,6 +23,7 @@ import {
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
 import { startServer } from "./server";
+import { setSharedChatGptBrowserContextProvider } from "./adapters/chatgpt-web/browser-worker";
 import { availableChatGptWebModelRoutes } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
@@ -507,9 +508,20 @@ class RemoteLoginBrowser {
 
   async stop(): Promise<void> {
     const context = this.context;
+    if (!context) {
+      this.page = undefined;
+      return;
+    }
+    // Refuse to tear down the shared browser while API/maintenance tabs are still active.
+    // The management tab is the page owned by this class; every other tab is a borrowed surface.
+    const managementPage = this.page;
+    const borrowedPages = context.pages().filter(page => page !== managementPage && !page.isClosed());
+    if (borrowedPages.length > 0) {
+      throw new Error(`Cannot stop the shared browser while ${borrowedPages.length} API/maintenance tab(s) are still active`);
+    }
     this.context = undefined;
     this.page = undefined;
-    if (context) await context.close().catch(() => {});
+    await context.close().catch(() => {});
   }
 
   async clear(): Promise<void> {
@@ -584,8 +596,17 @@ export async function runGateway(): Promise<void> {
   config.chromeExecutablePath = process.env.GATEWAY_CHROMIUM_PATH?.trim() || process.env.CHROME_BIN?.trim() || "/usr/bin/chromium";
   markerCapabilities(config);
 
-  const coreServer = startServer(config, { disableSignalHandlers: true });
   const browser = new RemoteLoginBrowser(config);
+  // API turns borrow tabs from the same persistent BrowserContext used by the admin UI.
+  // The provider is lazy: the admin browser starts only when first requested by the UI or API.
+  setSharedChatGptBrowserContextProvider(async () => {
+    await browser.start();
+    if (!browser.context || browser.context.isClosed()) {
+      throw new Error("Gateway management browser context is unavailable");
+    }
+    return browser.context;
+  });
+  const coreServer = startServer(config, { disableSignalHandlers: true });
   const sessions = new Map<string, AdminSession>();
   const responseThreads = new Map<string, string>();
   let publicServer!: ReturnType<typeof Bun.serve>;

@@ -124,6 +124,19 @@ export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
 const workers = new Map<string, ChatGptBrowserWorker>();
 
+/**
+ * Optional host-owned browser context. The Gateway installs this before accepting requests so
+ * API turns use the same authenticated BrowserContext as the visible management browser.
+ * The host remains the sole owner of the context and its browser process.
+ */
+let sharedBrowserContextProvider: (() => Promise<BrowserContext>) | undefined;
+
+export function setSharedChatGptBrowserContextProvider(
+  provider: (() => Promise<BrowserContext>) | undefined,
+): void {
+  sharedBrowserContextProvider = provider;
+}
+
 export async function closeChatGptBrowserWorkers(): Promise<void> {
   const active = [...workers.values()];
   workers.clear();
@@ -2000,7 +2013,7 @@ export class ChatGptBrowserWorker {
   private browser?: Browser;
   private context?: BrowserContext;
   private page?: Page;
-  private managedBrowserReady?: Promise<{ browser: Browser; context: BrowserContext }>;
+  private managedBrowserReady?: Promise<{ browser?: Browser; context: BrowserContext }>;
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
@@ -2134,10 +2147,15 @@ export class ChatGptBrowserWorker {
     await Promise.allSettled([...this.activeRuns.values()]);
     await this.maintenanceTail;
     const browser = this.browser;
+    const page = this.page;
+    const sharedContext = sharedBrowserContextProvider !== undefined;
     this.browser = undefined;
     this.context = undefined;
     this.page = undefined;
     this.managedBrowserReady = undefined;
+    // A shared context belongs to the Gateway. Close only this worker's maintenance page;
+    // never close the browser/context that also owns the visible management page and API turns.
+    if (sharedContext && page && !page.isClosed()) await page.close().catch(() => {});
     // For connectOverCDP, Playwright implements Browser.close as a transport disconnect; it does
     // not close the launcher-owned Electron process. Always release that connection and its
     // artifact directory instead of leaking one per timeout/helper lifecycle.
@@ -2205,6 +2223,11 @@ export class ChatGptBrowserWorker {
 
   private async ensurePage(): Promise<Page> {
     if (this.page && !this.page.isClosed()) return this.page;
+    if (sharedBrowserContextProvider) {
+      this.context = await sharedBrowserContextProvider();
+      this.page = await this.context.newPage();
+      return this.page;
+    }
     if (this.config.browserHost === "launcher") {
       const connection = await connectLauncherBrowserHost(this.config.browserHostDescriptorPath!);
       this.browser = connection.browser;
@@ -2227,9 +2250,14 @@ export class ChatGptBrowserWorker {
     return this.page;
   }
 
-  private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+  private async ensureManagedBrowser(): Promise<{ browser?: Browser; context: BrowserContext }> {
     if (this.managedBrowserReady) return this.managedBrowserReady;
     const opening = (async () => {
+      if (sharedBrowserContextProvider) {
+        const context = await sharedBrowserContextProvider();
+        this.context = context;
+        return { context };
+      }
       if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
         throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
       }
