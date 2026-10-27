@@ -362,6 +362,7 @@ function markerCapabilities(config: ReturnType<typeof defaultConfig>): void {
 class RemoteLoginBrowser {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
+  private capabilityInspection: Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> | undefined;
   private readonly profileDir: string;
 
   constructor(private readonly config: ReturnType<typeof defaultConfig>) {
@@ -391,6 +392,46 @@ class RemoteLoginBrowser {
     this.page = this.context.pages()[0] ?? await this.context.newPage();
     await this.page.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
     return this.status();
+  }
+
+  async inspectCapabilities(): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
+    if (this.capabilityInspection) return this.capabilityInspection;
+    const inspection = (async () => {
+      await this.start();
+      const context = this.context;
+      if (!context || context.isClosed()) throw new Error("Gateway management browser context is unavailable");
+      const probePage = await context.newPage();
+      try {
+        await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await assertAuthenticatedChatGptPage(probePage);
+        const capabilities = await detectChatGptAccountCapabilities(probePage, {
+          selectorTimeoutMs: 30_000,
+          stableAbsenceMs: 12_000,
+        });
+        const verifiedAt = new Date().toISOString();
+        atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
+          version: 1,
+          authenticated: true,
+          verifiedAt,
+          solAvailable: capabilities.solAvailable,
+          extraHighAvailable: capabilities.extraHighAvailable,
+          proAvailable: capabilities.proAvailable,
+        }) + "\\n", { mode: 0o600 });
+        this.config.solAvailable = capabilities.solAvailable;
+        this.config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
+        this.config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
+        return capabilities;
+      } finally {
+        if (!probePage.isClosed()) await probePage.close().catch(() => {});
+      }
+    })();
+    this.capabilityInspection = inspection;
+    try {
+      return await inspection;
+    } catch (error) {
+      if (this.capabilityInspection === inspection) this.capabilityInspection = undefined;
+      throw error;
+    }
   }
 
   async status(): Promise<Record<string, unknown>> {
@@ -524,11 +565,13 @@ class RemoteLoginBrowser {
     }
     this.context = undefined;
     this.page = undefined;
+    this.capabilityInspection = undefined;
     await context.close().catch(() => {});
   }
 
   async clear(): Promise<void> {
     await this.stop();
+    this.capabilityInspection = undefined;
     rmSync(this.config.storageStatePath, { force: true });
     rmSync(loginVerificationMarkerPath(this.config.storageStatePath), { force: true });
     rmSync(this.profileDir, { recursive: true, force: true });
@@ -764,6 +807,16 @@ export async function runGateway(): Promise<void> {
         if (!isGatewayApiRoute(request.method, url.pathname)) return jsonError(404, "not_found", "API endpoint not found");
         if (!isGatewayBearerAuthorized(request.headers.get("authorization"), apiKey)) {
           return jsonError(401, "invalid_api_key", "A valid Gateway API bearer key is required");
+        }
+        if ((request.method === "GET" && url.pathname === "/v1/models")
+          || (request.method === "POST" && (url.pathname === "/v1/responses" || url.pathname === "/v1/responses/compact"))) {
+          if (browserLoginStateExists(config)) {
+            try {
+              await browser.inspectCapabilities();
+            } catch (error) {
+              return jsonError(503, "model_capability_probe_failed", error instanceof Error ? error.message : String(error));
+            }
+          }
         }
         const declaredLength = Number(request.headers.get("content-length") ?? "0");
         if (declaredLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
