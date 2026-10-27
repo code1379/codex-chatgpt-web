@@ -23,7 +23,10 @@ import {
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
 import { startServer } from "./server";
-import { setSharedChatGptBrowserContextProvider } from "./adapters/chatgpt-web/browser-worker";
+import {
+  closeChatGptBrowserWorkers,
+  setSharedChatGptBrowserContextProvider,
+} from "./adapters/chatgpt-web/browser-worker";
 import { availableChatGptWebModelRoutes } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
@@ -736,12 +739,23 @@ export async function runGateway(): Promise<void> {
           }
         }
         if (request.method === "POST" && url.pathname === "/admin/browser/stop") {
-          await browser.stop();
-          return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          try {
+            // Drain worker-owned maintenance pages before asking the host to close its context.
+            await closeChatGptBrowserWorkers();
+            await browser.stop();
+            return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          } catch (error) {
+            return jsonError(409, "browser_busy", error instanceof Error ? error.message : String(error));
+          }
         }
         if (request.method === "POST" && url.pathname === "/admin/browser/clear") {
-          await browser.clear();
-          return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          try {
+            await closeChatGptBrowserWorkers();
+            await browser.clear();
+            return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          } catch (error) {
+            return jsonError(409, "browser_busy", error instanceof Error ? error.message : String(error));
+          }
         }
         return jsonError(404, "not_found", "Administrative endpoint not found");
       }
@@ -844,7 +858,6 @@ export async function runGateway(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     sessions.clear();
-    await browser.stop();
     try {
       await fetch("http://127.0.0.1:" + coreServer.port + "/admin/drain", {
         method: "POST",
@@ -861,6 +874,8 @@ export async function runGateway(): Promise<void> {
         await Bun.sleep(250);
       }
       if (idle) {
+        await closeChatGptBrowserWorkers();
+        await browser.stop();
         const response = await fetch("http://127.0.0.1:" + coreServer.port + "/admin/shutdown", {
           method: "POST",
           headers: { authorization: "Bearer " + config.controlToken },
@@ -868,9 +883,13 @@ export async function runGateway(): Promise<void> {
         if (!response.ok) coreServer.stop(true);
       } else {
         coreServer.stop(true);
+        await closeChatGptBrowserWorkers().catch(() => {});
+        await browser.stop().catch(() => {});
       }
     } catch {
       coreServer.stop(true);
+      await closeChatGptBrowserWorkers().catch(() => {});
+      await browser.stop().catch(() => {});
     }
     await publicServer.stop(true);
     resolveStopped?.();
