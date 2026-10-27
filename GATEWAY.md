@@ -52,6 +52,20 @@ curl -sS https://YOUR_SERVER_OR_DOMAIN:17840/v1/models \
 - No CPA OAuth file is required. A CPA Codex OAuth file is not a ChatGPT browser session and is not imported by this Gateway.
 
 
+## Direct 1Panel Compose deployment (no `.env` file)
+
+Use [`docker-compose.gateway.1panel.yml`](https://github.com/code1379/codex-chatgpt-web/blob/feat/remote-gateway/docker-compose.gateway.1panel.yml) when creating the project directly in 1Panel. This file uses the prebuilt GHCR image and puts environment variables inline, so you do not need to clone the repository or upload `.env.gateway.example`.
+
+1. In 1Panel, open **Containers → Compose/Orchestration** and create a new project.
+2. Choose the editor / custom Compose option and paste the complete contents of `docker-compose.gateway.1panel.yml`.
+3. Before deploying, replace `GATEWAY_API_KEY` and `GATEWAY_ADMIN_PASSWORD` with unique random secrets. API key should be at least 32 characters; admin password at least 16 characters. Do not leave any `REPLACE_WITH_...` value.
+4. Keep `GATEWAY_HOST: 127.0.0.1` and `network_mode: host`. Do not expose ports 17840 or 17841 in the cloud security group.
+5. Deploy the project. The service uses a named Docker volume `gateway-data` to persist browser login state.
+6. Add the 1Panel Website for `gateway.ohmygod.qzz.io`, enable a valid HTTPS certificate, and reverse proxy to `http://127.0.0.1:17840`. Preserve the Host header and send `X-Forwarded-Proto: https`.
+7. Open `https://gateway.ohmygod.qzz.io/`, sign in to the Gateway admin panel, start the browser, log in to ChatGPT, and save the session.
+
+Note: the Gateway image must have been published successfully by GitHub Actions and the GHCR package must be Public before 1Panel can pull it without registry credentials. The project remains experimental until real ChatGPT login and Responses API tests pass.
+
 ### 1Panel domain + HTTPS reverse proxy (recommended)
 
 The Compose project uses Docker host networking and binds the Gateway listener directly to VPS loopback `127.0.0.1:17840`; the internal Responses core binds to `127.0.0.1:17841`. Neither port is exposed on the public interface. The Compose file enables trusted-proxy handling for the 1Panel/OpenResty HTTPS terminator.
