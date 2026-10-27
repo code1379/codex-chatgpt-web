@@ -431,10 +431,18 @@ class RemoteLoginBrowser {
     const state = sanitizeBrowserLoginStorageState(await context.storageState());
     if (state.cookies.length === 0) throw new Error("No ChatGPT/OpenAI session cookies were found; sign-in was not saved");
     let capabilities = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
+    // Probe in a temporary tab so saving does not move focus on the user's active page.
+    let probePage: Page | undefined;
     try {
-      capabilities = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 10000, stableAbsenceMs: 2000 });
+      probePage = await context.newPage();
+      await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await assertAuthenticatedChatGptPage(probePage);
+      capabilities = await detectChatGptAccountCapabilities(probePage, { selectorTimeoutMs: 10000, stableAbsenceMs: 2000 });
     } catch {
       // A successful login remains useful even if the model-picker capability probe times out.
+    } finally {
+      if (probePage && !probePage.isClosed()) await probePage.close().catch(() => {});
+    }
     }
     atomicWriteFile(this.config.storageStatePath, JSON.stringify(state) + "\n", { mode: 0o600 });
     atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
