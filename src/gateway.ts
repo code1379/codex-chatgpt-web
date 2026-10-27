@@ -21,6 +21,7 @@ import {
   assertAuthenticatedChatGptPage,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
+  waitForAuthenticatedChatGptPage,
 } from "./chatgpt-session";
 import { startServer } from "./server";
 import {
@@ -411,7 +412,7 @@ class RemoteLoginBrowser {
       const probePage = await context.newPage();
       try {
         await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
-        await assertAuthenticatedChatGptPage(probePage);
+        await waitForAuthenticatedChatGptPage(probePage, 30_000);
         const capabilities = await detectChatGptAccountCapabilities(probePage, {
           selectorTimeoutMs: 30_000,
           stableAbsenceMs: 12_000,

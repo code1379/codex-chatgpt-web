@@ -9,7 +9,30 @@ import {
   assertNewChatPage,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
+  waitForAuthenticatedChatGptPage,
 } from "../src/chatgpt-session";
+
+test("authenticated page verification waits for the hydrated composer", async () => {
+  let hydrated = false;
+  const composer = {
+    isVisible: async () => hydrated,
+    waitFor: async ({ state, timeout }: { state: string; timeout: number }) => {
+      expect(state).toBe("visible");
+      expect(timeout).toBe(250);
+      hydrated = true;
+    },
+  };
+  const collection = {
+    filter() { return this; },
+    first: () => composer,
+    count: async () => 1,
+    nth: () => composer,
+  };
+  const page = { locator: () => collection };
+
+  await expect(waitForAuthenticatedChatGptPage(page as never, 250)).resolves.toBeUndefined();
+  expect(hydrated).toBe(true);
+});
 
 test("new chats are always ordinary and reject a previous conversation or Temporary Chat", async () => {
   expect(CHATGPT_NEW_CHAT_URL).toBe("https://chatgpt.com/");

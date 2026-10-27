@@ -47,7 +47,9 @@ jobs:
         with:
           context: .
           file: Dockerfile.gateway
-          push: ${{ github.event_name != 'pull_request' }}
+          # Branch pushes build and validate the candidate image without replacing the deployed tag.
+          # Publish only when the workflow is explicitly dispatched after validation.
+          push: ${{ github.event_name == 'workflow_dispatch' }}
           tags: |
             ghcr.io/code1379/codex-chatgpt-web-gateway:gateway-latest
             ghcr.io/code1379/codex-chatgpt-web-gateway:sha-${{ github.sha }}
