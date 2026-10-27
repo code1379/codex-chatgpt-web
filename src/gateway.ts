@@ -394,6 +394,14 @@ class RemoteLoginBrowser {
     return this.status();
   }
 
+  async sharedContext(): Promise<BrowserContext> {
+    await this.start();
+    if (!this.context || this.context.isClosed()) {
+      throw new Error("Gateway management browser context is unavailable");
+    }
+    return this.context;
+  }
+
   async inspectCapabilities(): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
     if (this.capabilityInspection) return this.capabilityInspection;
     const inspection = (async () => {
@@ -645,13 +653,7 @@ export async function runGateway(): Promise<void> {
   const browser = new RemoteLoginBrowser(config);
   // API turns borrow tabs from the same persistent BrowserContext used by the admin UI.
   // The provider is lazy: the admin browser starts only when first requested by the UI or API.
-  setSharedChatGptBrowserContextProvider(async () => {
-    await browser.start();
-    if (!browser.context || browser.context.isClosed()) {
-      throw new Error("Gateway management browser context is unavailable");
-    }
-    return browser.context;
-  });
+  setSharedChatGptBrowserContextProvider(() => browser.sharedContext());
   const coreServer = startServer(config, { disableSignalHandlers: true });
   const sessions = new Map<string, AdminSession>();
   const responseThreads = new Map<string, string>();
