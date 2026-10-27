@@ -124,6 +124,42 @@ export { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 
 const workers = new Map<string, ChatGptBrowserWorker>();
 
+/**
+ * Optional host-owned browser context and page. Gateway API turns borrow the exact visible
+ * management page to avoid a fresh tab's inconsistent ChatGPT hydration. The host remains the
+ * sole owner of the page, context and browser process.
+ */
+let sharedBrowserContextProvider: (() => Promise<BrowserContext>) | undefined;
+let sharedBrowserPageProvider: (() => Promise<Page>) | undefined;
+let sharedBrowserPageTurnTail: Promise<void> = Promise.resolve();
+let sharedBrowserPagePendingTurns = 0;
+
+export function setSharedChatGptBrowserContextProvider(
+  provider: (() => Promise<BrowserContext>) | undefined,
+): void {
+  sharedBrowserContextProvider = provider;
+}
+
+export function setSharedChatGptBrowserPageProvider(
+  provider: (() => Promise<Page>) | undefined,
+): void {
+  sharedBrowserPageProvider = provider;
+}
+
+function enqueueSharedBrowserPageTurn<T>(action: () => Promise<T>): Promise<T> {
+  if (sharedBrowserPagePendingTurns >= MAX_CHATGPT_BROWSER_TABS) {
+    return Promise.reject(new Error(
+      `Gateway shared browser page supports at most ${MAX_CHATGPT_BROWSER_TABS} queued or active turns`,
+    ));
+  }
+  sharedBrowserPagePendingTurns += 1;
+  const run = sharedBrowserPageTurnTail.then(action, action);
+  sharedBrowserPageTurnTail = run.then(() => undefined, () => undefined);
+  return run.finally(() => {
+    sharedBrowserPagePendingTurns = Math.max(0, sharedBrowserPagePendingTurns - 1);
+  });
+}
+
 export async function closeChatGptBrowserWorkers(): Promise<void> {
   const active = [...workers.values()];
   workers.clear();
@@ -2000,7 +2036,7 @@ export class ChatGptBrowserWorker {
   private browser?: Browser;
   private context?: BrowserContext;
   private page?: Page;
-  private managedBrowserReady?: Promise<{ browser: Browser; context: BrowserContext }>;
+  private managedBrowserReady?: Promise<{ browser?: Browser; context: BrowserContext }>;
   private launcherHelper?: LauncherBrowserHelperClient;
   private maintenanceTail: Promise<void> = Promise.resolve();
   private readonly activeRuns = new Map<string, Promise<string>>();
@@ -2072,11 +2108,18 @@ export class ChatGptBrowserWorker {
         `ChatGPT Web supports at most ${MAX_CHATGPT_BROWSER_TABS} simultaneous browser turns; close or finish a browser tab before starting another`,
       ));
     }
-    const useHelper = this.config.browserHost === "launcher" && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
+    const useHelper = !sharedBrowserPageProvider
+      && this.config.browserHost === "launcher"
+      && process.env.CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS !== "1";
     if (useHelper) {
       this.launcherHelper ??= new LauncherBrowserHelperClient(this.config);
     }
-    const run = Promise.resolve().then(() => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn));
+    const execute = () => useHelper ? this.launcherHelper!.run(turn) : this.runExclusive(turn);
+    // A Gateway-owned single page cannot safely host overlapping turns. Queue all providers
+    // behind one process-wide tail so workers with different model configs cannot race the SPA.
+    const run = Promise.resolve().then(() => sharedBrowserPageProvider
+      ? enqueueSharedBrowserPageTurn(execute)
+      : execute());
     this.activeRuns.set(turn.traceId, run);
     void run.finally(() => {
       if (this.activeRuns.get(turn.traceId) === run) this.activeRuns.delete(turn.traceId);
@@ -2134,10 +2177,16 @@ export class ChatGptBrowserWorker {
     await Promise.allSettled([...this.activeRuns.values()]);
     await this.maintenanceTail;
     const browser = this.browser;
+    const page = this.page;
+    const sharedContext = sharedBrowserContextProvider !== undefined;
+    const sharedPage = sharedBrowserPageProvider !== undefined;
     this.browser = undefined;
     this.context = undefined;
     this.page = undefined;
     this.managedBrowserReady = undefined;
+    // The Gateway owns its visible page and context. Workers borrowing that page must never
+    // close it during request cleanup or worker shutdown.
+    if (!sharedPage && sharedContext && page && !page.isClosed()) await page.close().catch(() => {});
     // For connectOverCDP, Playwright implements Browser.close as a transport disconnect; it does
     // not close the launcher-owned Electron process. Always release that connection and its
     // artifact directory instead of leaking one per timeout/helper lifecycle.
@@ -2204,7 +2253,17 @@ export class ChatGptBrowserWorker {
   }
 
   private async ensurePage(): Promise<Page> {
+    if (sharedBrowserPageProvider) {
+      this.page = await sharedBrowserPageProvider();
+      this.context = this.page.context();
+      return this.page;
+    }
     if (this.page && !this.page.isClosed()) return this.page;
+    if (sharedBrowserContextProvider) {
+      this.context = await sharedBrowserContextProvider();
+      this.page = await this.context.newPage();
+      return this.page;
+    }
     if (this.config.browserHost === "launcher") {
       const connection = await connectLauncherBrowserHost(this.config.browserHostDescriptorPath!);
       this.browser = connection.browser;
@@ -2227,9 +2286,21 @@ export class ChatGptBrowserWorker {
     return this.page;
   }
 
-  private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+  private async ensureManagedBrowser(): Promise<{ browser?: Browser; context: BrowserContext }> {
     if (this.managedBrowserReady) return this.managedBrowserReady;
     const opening = (async () => {
+      if (sharedBrowserPageProvider) {
+        const page = await sharedBrowserPageProvider();
+        this.page = page;
+        const context = page.context();
+        this.context = context;
+        return { context };
+      }
+      if (sharedBrowserContextProvider) {
+        const context = await sharedBrowserContextProvider();
+        this.context = context;
+        return { context };
+      }
       if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
         throw new Error(`ChatGPT web login state is missing: ${this.config.storageStatePath}`);
       }
@@ -2255,11 +2326,17 @@ export class ChatGptBrowserWorker {
   }
 
   /**
-   * A Codex turn owns one isolated browser conversation. Reusing the same
-   * ChatGPT SPA page can retain the previous transcript and autocomplete DOM,
-   * so an @app lookup may select stale UI from the preceding turn.
+   * Gateway mode deliberately reuses the exact visible management page. Some ChatGPT sessions
+   * do not hydrate a fresh tab even inside the same BrowserContext. Gateway turns are serialized
+   * by run() because one SPA page cannot safely host concurrent requests.
    */
   private async pageForNewTurn(): Promise<Page> {
+    if (sharedBrowserPageProvider) {
+      const page = await sharedBrowserPageProvider();
+      this.page = page;
+      this.context = page.context();
+      return page;
+    }
     if (this.config.browserHost === "launcher") {
       throw new Error("Launcher turns require an explicitly leased browser surface");
     }
@@ -4647,7 +4724,7 @@ export class ChatGptBrowserWorker {
 
   private async runExclusive(turn: BrowserTurn): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-    if (this.config.browserHost !== "launcher") return this.runBrowserTurn(turn);
+    if (sharedBrowserPageProvider || this.config.browserHost !== "launcher") return this.runBrowserTurn(turn);
 
     const lease = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
       phase: "start",
@@ -5715,7 +5792,7 @@ export class ChatGptBrowserWorker {
             `[chatgpt-web] failed to release launcher browser connection for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,
           );
         });
-      } else if (managedPage && !managedPage.isClosed()) {
+      } else if (!sharedBrowserPageProvider && managedPage && !managedPage.isClosed()) {
         await managedPage.close().catch(error => {
           console.error(
             `[chatgpt-web] failed to close managed browser tab for ${turn.traceId}: ${error instanceof Error ? error.message : String(error)}`,

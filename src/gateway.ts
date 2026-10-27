@@ -1,11 +1,12 @@
 import { timingSafeEqual, randomBytes } from "node:crypto";
+import { createConnection, type Socket } from "node:net";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import {
   atomicWriteFile,
@@ -18,11 +19,16 @@ import {
   sanitizeBrowserLoginStorageState,
 } from "./browser-login";
 import {
-  assertAuthenticatedChatGptPage,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
+  waitForAuthenticatedChatGptPage,
 } from "./chatgpt-session";
 import { startServer } from "./server";
+import {
+  closeChatGptBrowserWorkers,
+  setSharedChatGptBrowserContextProvider,
+  setSharedChatGptBrowserPageProvider,
+} from "./adapters/chatgpt-web/browser-worker";
 import { availableChatGptWebModelRoutes } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
@@ -30,8 +36,54 @@ const SESSION_COOKIE = "codex_web_gateway_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 const VIEWPORT = { width: 1365, height: 900 };
+const NOVNC_ROOT = process.env.GATEWAY_NOVNC_ROOT?.trim() || "/usr/share/novnc";
+const VNC_PORT = 5900;
 
 type AdminSession = { expiresAt: number };
+type GatewayVncSocketData = { socket?: Socket; closing?: boolean };
+
+function noVncContentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case ".html": return "text/html; charset=utf-8";
+    case ".js": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".json": return "application/json; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".gif": return "image/gif";
+    case ".ico": return "image/x-icon";
+    case ".woff": return "font/woff";
+    case ".woff2": return "font/woff2";
+    case ".ttf": return "font/ttf";
+    case ".wasm": return "application/wasm";
+    default: return "application/octet-stream";
+  }
+}
+
+function noVncAssetResponse(relativePath: string): Response {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(relativePath);
+  } catch {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  if (!decoded || decoded.includes(String.fromCharCode(0)) || decoded.includes(String.fromCharCode(92)) || decoded.startsWith("/")) {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  const root = resolve(NOVNC_ROOT);
+  const filePath = resolve(root, decoded);
+  if (filePath !== root && !filePath.startsWith(root + sep)) {
+    return new Response("Invalid asset path", { status: 400 });
+  }
+  if (!existsSync(filePath)) return new Response("Not found", { status: 404 });
+  try {
+    const headers = secureHeaders({ "content-type": noVncContentType(filePath) });
+    headers.set("x-frame-options", "SAMEORIGIN");
+    return new Response(readFileSync(filePath), { headers });
+  } catch {
+    return new Response("Not found", { status: 404 });
+  }
+}
 
 function requiredSecret(name: string, minimumLength: number): string {
   const value = process.env[name]?.trim() ?? "";
@@ -358,6 +410,7 @@ function markerCapabilities(config: ReturnType<typeof defaultConfig>): void {
 class RemoteLoginBrowser {
   private context: BrowserContext | undefined;
   private page: Page | undefined;
+  private capabilityInspection: Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> | undefined;
   private readonly profileDir: string;
 
   constructor(private readonly config: ReturnType<typeof defaultConfig>) {
@@ -387,6 +440,61 @@ class RemoteLoginBrowser {
     this.page = this.context.pages()[0] ?? await this.context.newPage();
     await this.page.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
     return this.status();
+  }
+
+  async sharedContext(): Promise<BrowserContext> {
+    await this.start();
+    if (!this.context || this.context.isClosed()) {
+      throw new Error("Gateway management browser context is unavailable");
+    }
+    return this.context;
+  }
+
+  async sharedPage(): Promise<Page> {
+    await this.start();
+    if (!this.page || this.page.isClosed()) {
+      throw new Error("Gateway management browser page is unavailable");
+    }
+    return this.page;
+  }
+
+  async inspectCapabilities(): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
+    if (this.capabilityInspection) return this.capabilityInspection;
+    const inspection = (async () => {
+      await this.start();
+      const page = this.page;
+      if (!page || page.isClosed()) throw new Error("Gateway management browser page is unavailable");
+      // Inspect the existing visible page. Opening a second tab can fail to hydrate the
+      // composer despite the already-authenticated management page working normally.
+      if (new URL(page.url()).origin !== "https://chatgpt.com") {
+        await page.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      }
+      await waitForAuthenticatedChatGptPage(page, 30_000);
+      const capabilities = await detectChatGptAccountCapabilities(page, {
+        selectorTimeoutMs: 30_000,
+        stableAbsenceMs: 12_000,
+      });
+      const verifiedAt = new Date().toISOString();
+      atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
+        version: 1,
+        authenticated: true,
+        verifiedAt,
+        solAvailable: capabilities.solAvailable,
+        extraHighAvailable: capabilities.extraHighAvailable,
+        proAvailable: capabilities.proAvailable,
+      }) + "\n", { mode: 0o600 });
+      this.config.solAvailable = capabilities.solAvailable;
+      this.config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
+      this.config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
+      return capabilities;
+    })();
+    this.capabilityInspection = inspection;
+    try {
+      return await inspection;
+    } catch (error) {
+      if (this.capabilityInspection === inspection) this.capabilityInspection = undefined;
+      throw error;
+    }
   }
 
   async status(): Promise<Record<string, unknown>> {
@@ -458,7 +566,7 @@ class RemoteLoginBrowser {
     if (new URL(page.url()).origin !== "https://chatgpt.com") {
       throw new Error("Finish sign-in and return to chatgpt.com before saving the session");
     }
-    await assertAuthenticatedChatGptPage(page);
+    await waitForAuthenticatedChatGptPage(page, 30_000);
     const state = sanitizeBrowserLoginStorageState(await context.storageState());
     if (state.cookies.length === 0) throw new Error("No ChatGPT/OpenAI session cookies were found; sign-in was not saved");
     // Keep the last verified capability snapshot unless a fresh probe confirms a change.
@@ -467,28 +575,11 @@ class RemoteLoginBrowser {
       extraHighAvailable: this.config.solAvailable && this.config.extraHighAvailable === true,
       proAvailable: this.config.solAvailable && this.config.proAvailable,
     };
-    let probePage: Page | undefined;
     try {
-      // A fresh tab can hydrate the ChatGPT composer more slowly than the existing login tab.
-      // Wait for the model/effort controls to settle before treating their absence as a capability result.
-      probePage = await context.newPage();
-      await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await assertAuthenticatedChatGptPage(probePage);
-      capabilities = await detectChatGptAccountCapabilities(probePage, { selectorTimeoutMs: 30000, stableAbsenceMs: 12000 });
+      // The management page is the authenticated source of truth. Do not open a probe tab.
+      capabilities = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 30_000, stableAbsenceMs: 12_000 });
     } catch {
-      // A failed temporary-tab probe must not overwrite a previously verified capability snapshot.
-    } finally {
-      if (probePage && !probePage.isClosed()) await probePage.close().catch(() => {});
-    }
-    if (!capabilities.solAvailable) {
-      // Recovery fallback: inspect the already-loaded authenticated page, which may have hydrated
-      // the account's model controls even when a new tab did not.
-      try {
-        const fallback = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 15000, stableAbsenceMs: 5000 });
-        if (fallback.solAvailable) capabilities = fallback;
-      } catch {
-        // Preserve the last known capability snapshot if both probes are inconclusive.
-      }
+      // Preserve the last verified snapshot if the visible page cannot conclusively expose controls.
     }
     atomicWriteFile(this.config.storageStatePath, JSON.stringify(state) + "\n", { mode: 0o600 });
     atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
@@ -507,13 +598,26 @@ class RemoteLoginBrowser {
 
   async stop(): Promise<void> {
     const context = this.context;
+    if (!context) {
+      this.page = undefined;
+      return;
+    }
+    // Refuse to tear down the shared browser while API/maintenance tabs are still active.
+    // The management tab is the page owned by this class; every other tab is a borrowed surface.
+    const managementPage = this.page;
+    const borrowedPages = context.pages().filter(page => page !== managementPage && !page.isClosed());
+    if (borrowedPages.length > 0) {
+      throw new Error(`Cannot stop the shared browser while ${borrowedPages.length} API/maintenance tab(s) are still active`);
+    }
     this.context = undefined;
     this.page = undefined;
-    if (context) await context.close().catch(() => {});
+    this.capabilityInspection = undefined;
+    await context.close().catch(() => {});
   }
 
   async clear(): Promise<void> {
     await this.stop();
+    this.capabilityInspection = undefined;
     rmSync(this.config.storageStatePath, { force: true });
     rmSync(loginVerificationMarkerPath(this.config.storageStatePath), { force: true });
     rmSync(this.profileDir, { recursive: true, force: true });
@@ -584,8 +688,12 @@ export async function runGateway(): Promise<void> {
   config.chromeExecutablePath = process.env.GATEWAY_CHROMIUM_PATH?.trim() || process.env.CHROME_BIN?.trim() || "/usr/bin/chromium";
   markerCapabilities(config);
 
-  const coreServer = startServer(config, { disableSignalHandlers: true });
   const browser = new RemoteLoginBrowser(config);
+  // API turns borrow tabs from the same persistent BrowserContext used by the admin UI.
+  // The provider is lazy: the admin browser starts only when first requested by the UI or API.
+  setSharedChatGptBrowserContextProvider(() => browser.sharedContext());
+  setSharedChatGptBrowserPageProvider(() => browser.sharedPage());
+  const coreServer = startServer(config, { disableSignalHandlers: true });
   const sessions = new Map<string, AdminSession>();
   const responseThreads = new Map<string, string>();
   let publicServer!: ReturnType<typeof Bun.serve>;
@@ -594,11 +702,38 @@ export async function runGateway(): Promise<void> {
   let resolveStopped: (() => void) | undefined;
   const stopped = new Promise<void>(resolvePromise => { resolveStopped = resolvePromise; });
 
-  publicServer = Bun.serve({
+  publicServer = Bun.serve<GatewayVncSocketData>({
     hostname: host,
     port,
     idleTimeout: 0,
     ...(tls ? { tls } : {}),
+    websocket: {
+      open(ws) {
+        const socket = createConnection({ host: "127.0.0.1", port: VNC_PORT });
+        ws.data.socket = socket;
+        socket.on("data", chunk => {
+          if (ws.readyState === 1) ws.send(chunk);
+        });
+        socket.on("error", () => {
+          if (ws.readyState === 1) ws.close(1011, "VNC backend unavailable");
+        });
+        socket.on("close", () => {
+          if (ws.readyState === 1) ws.close(1000, "VNC backend closed");
+        });
+      },
+      message(ws, message) {
+        const socket = ws.data.socket;
+        if (!socket || socket.destroyed) {
+          ws.close(1011, "VNC backend unavailable");
+          return;
+        }
+        socket.write(Buffer.from(message));
+      },
+      close(ws) {
+        ws.data.closing = true;
+        ws.data.socket?.destroy();
+      },
+    },
     async fetch(request) {
       const url = new URL(request.url);
       const externalUrl = effectiveRequestUrl(request);
@@ -669,6 +804,24 @@ export async function runGateway(): Promise<void> {
         if (request.method !== "GET" && !originIsSame(request)) {
           return jsonError(403, "origin_rejected", "Administrative requests must be same-origin");
         }
+        if (request.method === "GET" && url.pathname === "/admin/novnc") {
+          return new Response(null, {
+            status: 302,
+            headers: secureHeaders({
+              location: "/admin/novnc/vnc.html?autoconnect=true&resize=scale&path=admin/vnc&reconnect=true&reconnect_delay=1000",
+            }),
+          });
+        }
+        if (request.method === "GET" && url.pathname.startsWith("/admin/novnc/")) {
+          return noVncAssetResponse(url.pathname.slice("/admin/novnc/".length));
+        }
+        if (request.method === "GET" && url.pathname === "/admin/vnc") {
+          if (!originIsSame(request)) return jsonError(403, "origin_rejected", "VNC connection must be same-origin");
+          if (!publicServer.upgrade(request, { data: { closing: false } })) {
+            return jsonError(400, "vnc_upgrade_failed", "Could not upgrade the VNC WebSocket connection");
+          }
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/admin/status") {
           return Response.json({
             service: "codex-chatgpt-web-gateway",
@@ -715,12 +868,23 @@ export async function runGateway(): Promise<void> {
           }
         }
         if (request.method === "POST" && url.pathname === "/admin/browser/stop") {
-          await browser.stop();
-          return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          try {
+            // Drain worker-owned maintenance pages before asking the host to close its context.
+            await closeChatGptBrowserWorkers();
+            await browser.stop();
+            return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          } catch (error) {
+            return jsonError(409, "browser_busy", error instanceof Error ? error.message : String(error));
+          }
         }
         if (request.method === "POST" && url.pathname === "/admin/browser/clear") {
-          await browser.clear();
-          return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          try {
+            await closeChatGptBrowserWorkers();
+            await browser.clear();
+            return Response.json({ status: "ok" }, { headers: secureHeaders() });
+          } catch (error) {
+            return jsonError(409, "browser_busy", error instanceof Error ? error.message : String(error));
+          }
         }
         return jsonError(404, "not_found", "Administrative endpoint not found");
       }
@@ -729,6 +893,16 @@ export async function runGateway(): Promise<void> {
         if (!isGatewayApiRoute(request.method, url.pathname)) return jsonError(404, "not_found", "API endpoint not found");
         if (!isGatewayBearerAuthorized(request.headers.get("authorization"), apiKey)) {
           return jsonError(401, "invalid_api_key", "A valid Gateway API bearer key is required");
+        }
+        if ((request.method === "GET" && url.pathname === "/v1/models")
+          || (request.method === "POST" && (url.pathname === "/v1/responses" || url.pathname === "/v1/responses/compact"))) {
+          if (browserLoginStateExists(config)) {
+            try {
+              await browser.inspectCapabilities();
+            } catch (error) {
+              return jsonError(503, "model_capability_probe_failed", error instanceof Error ? error.message : String(error));
+            }
+          }
         }
         const declaredLength = Number(request.headers.get("content-length") ?? "0");
         if (declaredLength > MAX_REQUEST_BYTES) return jsonError(413, "request_too_large", "Request body exceeds Gateway limit");
@@ -823,7 +997,6 @@ export async function runGateway(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     sessions.clear();
-    await browser.stop();
     try {
       await fetch("http://127.0.0.1:" + coreServer.port + "/admin/drain", {
         method: "POST",
@@ -840,6 +1013,8 @@ export async function runGateway(): Promise<void> {
         await Bun.sleep(250);
       }
       if (idle) {
+        await closeChatGptBrowserWorkers();
+        await browser.stop();
         const response = await fetch("http://127.0.0.1:" + coreServer.port + "/admin/shutdown", {
           method: "POST",
           headers: { authorization: "Bearer " + config.controlToken },
@@ -847,9 +1022,13 @@ export async function runGateway(): Promise<void> {
         if (!response.ok) coreServer.stop(true);
       } else {
         coreServer.stop(true);
+        await closeChatGptBrowserWorkers().catch(() => {});
+        await browser.stop().catch(() => {});
       }
     } catch {
       coreServer.stop(true);
+      await closeChatGptBrowserWorkers().catch(() => {});
+      await browser.stop().catch(() => {});
     }
     await publicServer.stop(true);
     resolveStopped?.();

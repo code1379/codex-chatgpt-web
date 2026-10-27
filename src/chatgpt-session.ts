@@ -314,6 +314,23 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
   }
 }
 
+/**
+ * A completed document navigation does not mean the React composer has hydrated.
+ * Wait for the real visible composer before interpreting its absence as an auth failure.
+ */
+export async function waitForAuthenticatedChatGptPage(
+  page: Page,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const composer = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
+  try {
+    await composer.waitFor({ state: "visible", timeout: timeoutMs });
+  } catch {
+    throw new Error("ChatGPT authentication could not be verified: no visible composer is present");
+  }
+  await assertAuthenticatedChatGptPage(page);
+}
+
 export async function assertNewChatPage(page: Page): Promise<void> {
   const url = new URL(page.url());
   const expected = new URL(CHATGPT_NEW_CHAT_URL);
@@ -352,8 +369,13 @@ export async function waitForChatGptEffortControl(
           await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
           continue;
         }
-      } catch {
-        // Wait for hydration; only a stable, fully loaded composer without a control means Luna-only.
+      } catch (error) {
+        // A missing selector can be hydration delay. Ambiguous controls and failed observations
+        // are not evidence of a Luna-only account and must remain visible to the caller.
+        if (!(error instanceof Error)
+          || error.message !== "ChatGPT model/effort control was not found in the current composer") {
+          throw error;
+        }
       }
     }
     presenceObservations = 0;

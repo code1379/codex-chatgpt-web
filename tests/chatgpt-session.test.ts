@@ -9,7 +9,30 @@ import {
   assertNewChatPage,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
+  waitForAuthenticatedChatGptPage,
 } from "../src/chatgpt-session";
+
+test("authenticated page verification waits for the hydrated composer", async () => {
+  let hydrated = false;
+  const composer = {
+    isVisible: async () => hydrated,
+    waitFor: async ({ state, timeout }: { state: string; timeout: number }) => {
+      expect(state).toBe("visible");
+      expect(timeout).toBe(250);
+      hydrated = true;
+    },
+  };
+  const collection = {
+    filter() { return this; },
+    first: () => composer,
+    count: async () => 1,
+    nth: () => composer,
+  };
+  const page = { locator: () => collection };
+
+  await expect(waitForAuthenticatedChatGptPage(page as never, 250)).resolves.toBeUndefined();
+  expect(hydrated).toBe(true);
+});
 
 test("new chats are always ordinary and reject a previous conversation or Temporary Chat", async () => {
   expect(CHATGPT_NEW_CHAT_URL).toBe("https://chatgpt.com/");
@@ -187,7 +210,12 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
   const effortButton = {
     filter() { return this; },
     last() { return this; },
+    count: async () => 0,
     isVisible: async () => false,
+  };
+  const fallbackButtons = {
+    filter() { return this; },
+    count: async () => 0,
   };
   const composerForm = {
     count: async () => 1,
@@ -201,7 +229,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
     locator: () => composerForm,
   };
   const page = {
-    locator: () => composer,
+    locator: (selector: string) => selector === CHATGPT_COMPOSER_SELECTOR ? composer : fallbackButtons,
     evaluate: async () => true,
   };
 
@@ -212,31 +240,14 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
 });
 
 test("a transient effort control does not turn a Luna-only account into Sol", async () => {
+  const fixture = reasoningPicker();
   let visibilityReads = 0;
-  const effortButton = {
-    filter() { return this; },
-    last() { return this; },
-    isVisible: async () => {
-      visibilityReads += 1;
-      return visibilityReads === 1;
-    },
-  };
-  const composerForm = {
-    count: async () => 1,
-    locator: () => effortButton,
-  };
-  const composers = {
-    filter() { return this; },
-    last() { return this; },
-    count: async () => 1,
-    locator: () => composerForm,
-  };
-  const page = {
-    locator: () => composers,
-    evaluate: async () => true,
+  fixture.control.isVisible = async () => {
+    visibilityReads += 1;
+    return visibilityReads === 1;
   };
 
-  await expect(detectChatGptAccountCapabilities(page as never, {
+  await expect(detectChatGptAccountCapabilities(fixture.page as never, {
     selectorTimeoutMs: 100,
     stableAbsenceMs: 0,
   })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
