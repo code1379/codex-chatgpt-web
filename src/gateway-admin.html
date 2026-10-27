@@ -34,9 +34,9 @@ function showLogin(){loggedIn=false;$("login").classList.remove("hidden");$("app
 async function showApp(){loggedIn=true;$("login").classList.add("hidden");$("app").classList.remove("hidden");await status();await screenshot();if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(()=>{if(loggedIn)screenshot().catch(()=>{})},2500)}
 $("loginForm").addEventListener("submit",async e=>{e.preventDefault();$("loginError").textContent="";try{await api("/admin/login",{method:"POST",body:JSON.stringify({password:$("password").value})});$("password").value="";await showApp()}catch(e){$("loginError").textContent=e.message}});
 $("logout").onclick=async()=>{try{await api("/admin/logout",{method:"POST",body:"{}"})}catch{}showLogin()};
-async function status(){const s=await api("/admin/status");const b=s.browser||{};$("status").innerHTML='<span class="dot '+(b.liveAuthenticated?"ok":"")+'"></span><span>'+(b.liveAuthenticated?"ChatGPT 已登录":b.running?"浏览器运行中":"浏览器未启动")+'</span>';$("statusDetail").textContent="已保存会话："+(s.savedSession?"是":"否")+"；当前页面："+(b.url||"—")+"；版本："+s.version}
+async function status(){const s=await api("/admin/status");const b=s.browser||{};$("status").innerHTML='<span class="dot '+(b.liveAuthenticated?"ok":"")+'"></span><span>'+(b.liveAuthenticated?"ChatGPT 已登录":b.running?"浏览器运行中":"浏览器未启动")+'</span>';$("statusDetail").textContent="已保存会话："+(s.savedSession?"是":"否")+"；当前页面："+(b.url||"—")+"；版本："+s.version;return s}
 async function screenshot(){if(!loggedIn)return;try{const r=await fetch("/admin/browser/screenshot",{cache:"no-store",credentials:"same-origin"});if(!r.ok)return;const u=URL.createObjectURL(await r.blob());const images=[$("screen"),$("screenLarge")].filter(Boolean);const old=[...new Set(images.map(img=>img.src).filter(src=>src.startsWith("blob:")))];images.forEach(img=>img.src=u);old.forEach(src=>URL.revokeObjectURL(src))}catch{}}
-async function act(path,body={}){const el=$("actionError");el.textContent="";try{await api(path,{method:"POST",body:JSON.stringify(body)});await status();await screenshot()}catch(e){el.textContent=e.message}}
+function showNotice(message,warn=false){const el=$("actionNotice");el.textContent=message;el.classList.toggle("warn",warn);el.classList.remove("hidden")}async function act(path,body={}){const el=$("actionError");el.textContent="";$("actionNotice").classList.add("hidden");try{await api(path,{method:"POST",body:JSON.stringify(body)});const s=await status();await screenshot();if(path==="/admin/browser/save")showNotice(s.savedSession?"登录验证成功，ChatGPT 网页会话已保存。下一步先测试 GET /v1/models，再调用 POST /v1/responses。":"保存请求完成，但尚未确认会话已保存，请刷新状态检查。",!s.savedSession);else if(path==="/admin/browser/start")showNotice("浏览器已启动。请完成 ChatGPT 登录后点击“验证并保存登录”。");else if(path==="/admin/browser/stop")showNotice("浏览器已关闭；已保存的会话不会因此删除。");else if(path==="/admin/browser/clear")showNotice("已清除保存的登录状态，下次调用模型前需要重新登录。",true);else showNotice("操作成功。")}catch(e){el.textContent=e.message}}
 $("start").onclick=()=>act("/admin/browser/start");$("save").onclick=()=>act("/admin/browser/save");$("stop").onclick=()=>act("/admin/browser/stop");$("clear").onclick=async()=>{if(confirm("确定清除服务器保存的 ChatGPT 登录状态？"))await act("/admin/browser/clear")};$("refresh").onclick=()=>{status().catch(()=>{});screenshot()};
 async function sendText(inputId){const text=$(inputId).value;if(text){await act("/admin/browser/action",{type:"type",text});$(inputId).value=""}}
 $("type").onclick=()=>sendText("typeText");$("typeLarge").onclick=()=>sendText("typeTextLarge");
@@ -53,5 +53,19 @@ $("expandBrowser").onclick=()=>{$("browserModal").classList.remove("hidden");scr
 $("closeBrowserModal").onclick=()=>{$("browserModal").classList.add("hidden")};
 $("browserModal").addEventListener("click",e=>{if(e.target===$("browserModal"))$("browserModal").classList.add("hidden")});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("browserModal").classList.contains("hidden"))$("browserModal").classList.add("hidden")});
+const apiExampleLines = [
+"# 将占位符替换为 1Panel Compose 中的 GATEWAY_API_KEY；不要分享密钥",
+"export GATEWAY_API_KEY='PASTE_YOUR_GATEWAY_API_KEY'",
+"export GATEWAY_BASE_URL='" + window.location.origin + "'",
+"",
+"# 1. 获取实际可用模型 ID",
+'curl -sS "$GATEWAY_BASE_URL/v1/models" -H "Authorization: Bearer $GATEWAY_API_KEY"',
+"",
+"# 2. 将 YOUR_MODEL_ID 替换为上一步返回的 data[].id",
+'curl -N "$GATEWAY_BASE_URL/v1/responses" -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" -d \'{"model":"YOUR_MODEL_ID","input":"请用中文简短回复：Gateway API 测试成功。","stream":true}\''
+].join("\n");
+$("apiBaseUrl").textContent=window.location.origin;
+$("apiExample").textContent=apiExampleLines;
+$("copyApiExample").onclick=async()=>{try{await navigator.clipboard.writeText(apiExampleLines);showNotice("测试命令已复制。执行前替换 API Key 和模型 ID。")}catch{showNotice("请手动复制上方测试命令。",true)}};
 api("/admin/status").then(showApp).catch(()=>showLogin());
 </script></body></html>
