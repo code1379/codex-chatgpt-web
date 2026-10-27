@@ -19,7 +19,6 @@ import {
   sanitizeBrowserLoginStorageState,
 } from "./browser-login";
 import {
-  assertAuthenticatedChatGptPage,
   CHATGPT_NEW_CHAT_URL,
   detectChatGptAccountCapabilities,
   waitForAuthenticatedChatGptPage,
@@ -28,6 +27,7 @@ import { startServer } from "./server";
 import {
   closeChatGptBrowserWorkers,
   setSharedChatGptBrowserContextProvider,
+  setSharedChatGptBrowserPageProvider,
 } from "./adapters/chatgpt-web/browser-worker";
 import { availableChatGptWebModelRoutes } from "./chatgpt-web-models";
 import { VERSION } from "./version";
@@ -450,36 +450,43 @@ class RemoteLoginBrowser {
     return this.context;
   }
 
+  async sharedPage(): Promise<Page> {
+    await this.start();
+    if (!this.page || this.page.isClosed()) {
+      throw new Error("Gateway management browser page is unavailable");
+    }
+    return this.page;
+  }
+
   async inspectCapabilities(): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
     if (this.capabilityInspection) return this.capabilityInspection;
     const inspection = (async () => {
       await this.start();
-      const context = this.context;
-      if (!context || context.isClosed()) throw new Error("Gateway management browser context is unavailable");
-      const probePage = await context.newPage();
-      try {
-        await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
-        await waitForAuthenticatedChatGptPage(probePage, 30_000);
-        const capabilities = await detectChatGptAccountCapabilities(probePage, {
-          selectorTimeoutMs: 30_000,
-          stableAbsenceMs: 12_000,
-        });
-        const verifiedAt = new Date().toISOString();
-        atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
-          version: 1,
-          authenticated: true,
-          verifiedAt,
-          solAvailable: capabilities.solAvailable,
-          extraHighAvailable: capabilities.extraHighAvailable,
-          proAvailable: capabilities.proAvailable,
-        }) + "\n", { mode: 0o600 });
-        this.config.solAvailable = capabilities.solAvailable;
-        this.config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
-        this.config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
-        return capabilities;
-      } finally {
-        if (!probePage.isClosed()) await probePage.close().catch(() => {});
+      const page = this.page;
+      if (!page || page.isClosed()) throw new Error("Gateway management browser page is unavailable");
+      // Inspect the existing visible page. Opening a second tab can fail to hydrate the
+      // composer despite the already-authenticated management page working normally.
+      if (new URL(page.url()).origin !== "https://chatgpt.com") {
+        await page.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
       }
+      await waitForAuthenticatedChatGptPage(page, 30_000);
+      const capabilities = await detectChatGptAccountCapabilities(page, {
+        selectorTimeoutMs: 30_000,
+        stableAbsenceMs: 12_000,
+      });
+      const verifiedAt = new Date().toISOString();
+      atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
+        version: 1,
+        authenticated: true,
+        verifiedAt,
+        solAvailable: capabilities.solAvailable,
+        extraHighAvailable: capabilities.extraHighAvailable,
+        proAvailable: capabilities.proAvailable,
+      }) + "\n", { mode: 0o600 });
+      this.config.solAvailable = capabilities.solAvailable;
+      this.config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
+      this.config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
+      return capabilities;
     })();
     this.capabilityInspection = inspection;
     try {
@@ -559,7 +566,7 @@ class RemoteLoginBrowser {
     if (new URL(page.url()).origin !== "https://chatgpt.com") {
       throw new Error("Finish sign-in and return to chatgpt.com before saving the session");
     }
-    await assertAuthenticatedChatGptPage(page);
+    await waitForAuthenticatedChatGptPage(page, 30_000);
     const state = sanitizeBrowserLoginStorageState(await context.storageState());
     if (state.cookies.length === 0) throw new Error("No ChatGPT/OpenAI session cookies were found; sign-in was not saved");
     // Keep the last verified capability snapshot unless a fresh probe confirms a change.
@@ -568,28 +575,11 @@ class RemoteLoginBrowser {
       extraHighAvailable: this.config.solAvailable && this.config.extraHighAvailable === true,
       proAvailable: this.config.solAvailable && this.config.proAvailable,
     };
-    let probePage: Page | undefined;
     try {
-      // A fresh tab can hydrate the ChatGPT composer more slowly than the existing login tab.
-      // Wait for the model/effort controls to settle before treating their absence as a capability result.
-      probePage = await context.newPage();
-      await probePage.goto(CHATGPT_NEW_CHAT_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await assertAuthenticatedChatGptPage(probePage);
-      capabilities = await detectChatGptAccountCapabilities(probePage, { selectorTimeoutMs: 30000, stableAbsenceMs: 12000 });
+      // The management page is the authenticated source of truth. Do not open a probe tab.
+      capabilities = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 30_000, stableAbsenceMs: 12_000 });
     } catch {
-      // A failed temporary-tab probe must not overwrite a previously verified capability snapshot.
-    } finally {
-      if (probePage && !probePage.isClosed()) await probePage.close().catch(() => {});
-    }
-    if (!capabilities.solAvailable) {
-      // Recovery fallback: inspect the already-loaded authenticated page, which may have hydrated
-      // the account's model controls even when a new tab did not.
-      try {
-        const fallback = await detectChatGptAccountCapabilities(page, { selectorTimeoutMs: 15000, stableAbsenceMs: 5000 });
-        if (fallback.solAvailable) capabilities = fallback;
-      } catch {
-        // Preserve the last known capability snapshot if both probes are inconclusive.
-      }
+      // Preserve the last verified snapshot if the visible page cannot conclusively expose controls.
     }
     atomicWriteFile(this.config.storageStatePath, JSON.stringify(state) + "\n", { mode: 0o600 });
     atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
@@ -702,6 +692,7 @@ export async function runGateway(): Promise<void> {
   // API turns borrow tabs from the same persistent BrowserContext used by the admin UI.
   // The provider is lazy: the admin browser starts only when first requested by the UI or API.
   setSharedChatGptBrowserContextProvider(() => browser.sharedContext());
+  setSharedChatGptBrowserPageProvider(() => browser.sharedPage());
   const coreServer = startServer(config, { disableSignalHandlers: true });
   const sessions = new Map<string, AdminSession>();
   const responseThreads = new Map<string, string>();
