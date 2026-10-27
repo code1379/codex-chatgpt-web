@@ -443,7 +443,6 @@ class RemoteLoginBrowser {
     } finally {
       if (probePage && !probePage.isClosed()) await probePage.close().catch(() => {});
     }
-    }
     atomicWriteFile(this.config.storageStatePath, JSON.stringify(state) + "\n", { mode: 0o600 });
     atomicWriteFile(loginVerificationMarkerPath(this.config.storageStatePath), JSON.stringify({
       version: 1,
