@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isGatewayApiRoute, isGatewayBearerAuthorized } from "../src/gateway";
+import { effectiveRequestUrl, isGatewayApiRoute, isGatewayBearerAuthorized } from "../src/gateway";
 
 test("Gateway requires exact Bearer authentication for API routes", () => {
   const key = "test-gateway-key-that-is-long-enough-for-unit-testing";
@@ -48,4 +48,32 @@ test("Gateway rejects malformed or non-object Responses JSON", async () => {
   const { addGatewayTurnMetadata } = await import("../src/gateway");
   expect(() => addGatewayTurnMetadata("{", new Map())).toThrow();
   expect(() => addGatewayTurnMetadata("[]", new Map())).toThrow("Responses request body must be a JSON object");
+});
+
+test("Gateway recognizes HTTPS from the configured reverse proxy", () => {
+  const previous = process.env.GATEWAY_TRUST_PROXY;
+  try {
+    process.env.GATEWAY_TRUST_PROXY = "true";
+    const request = new Request("http://127.0.0.1:17840/admin/login", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    expect(effectiveRequestUrl(request).protocol).toBe("https:");
+  } finally {
+    if (previous === undefined) delete process.env.GATEWAY_TRUST_PROXY;
+    else process.env.GATEWAY_TRUST_PROXY = previous;
+  }
+});
+
+test("Gateway ignores forwarded scheme when trusted proxy mode is disabled", () => {
+  const previous = process.env.GATEWAY_TRUST_PROXY;
+  try {
+    delete process.env.GATEWAY_TRUST_PROXY;
+    const request = new Request("http://127.0.0.1:17840/admin/login", {
+      headers: { "x-forwarded-proto": "https" },
+    });
+    expect(effectiveRequestUrl(request).protocol).toBe("http:");
+  } finally {
+    if (previous === undefined) delete process.env.GATEWAY_TRUST_PROXY;
+    else process.env.GATEWAY_TRUST_PROXY = previous;
+  }
 });
