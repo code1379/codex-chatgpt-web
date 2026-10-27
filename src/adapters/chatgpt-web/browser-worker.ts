@@ -68,6 +68,7 @@ import {
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
+  chatGptEffortControlForComposer,
   detectChatGptAccountCapabilities,
   readChatGptEffortCapabilities,
   readChatGptEffortSnapshot,
@@ -2282,8 +2283,9 @@ export class ChatGptBrowserWorker {
     if (uiEffortIndex === null) {
       await settleChatGptUi();
       await throwIfChatGptRateLimitDialog(page);
-      const visibleControls = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-      if (await visibleControls.count() > 0) {
+      let visibleControls: Locator | undefined;
+      try { visibleControls = await chatGptEffortControlForComposer(page, composer); } catch { /* no model control is consistent with Luna-only */ }
+      if (visibleControls && await visibleControls.count() > 0) {
         throw chatGptModelControlUnavailableError(
           "ChatGPT Luna was selected from a Luna-only capability probe, but the account now exposes a model selector; rerun setup",
         );
@@ -2293,7 +2295,7 @@ export class ChatGptBrowserWorker {
       if (!mode.thinkEnabled) await setChatGptThinkMode(composer, false, captureDiagnostic);
       return mode;
     }
-    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+    const currentEffort = await chatGptEffortControlForComposer(page, composer);
     const effortWaitAbort = new AbortController();
     try {
       const ready = await Promise.race([
@@ -2435,9 +2437,9 @@ export class ChatGptBrowserWorker {
   private async assertSelectedEffort(page: Page, mode: SelectedChatGptWebModelMode, verifyFamily = true): Promise<void> {
     if (!mode.selection) return;
     const composer = await this.activeComposer(page);
-    const controls = composer.locator("xpath=ancestor::form[1]")
-      .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
+    let controls: Locator | undefined;
+    try { controls = await chatGptEffortControlForComposer(page, composer); } catch { /* checked below */ }
+    if (page.url() !== mode.selection.url || !mode.selection.label || !controls || await controls.count() !== 1) {
       throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the selected model's browser surface before submission");
     }
     const control = controls.first();
