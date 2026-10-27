@@ -1,8 +1,7 @@
 services:
   chatgpt-web-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile.gateway
+    image: ghcr.io/code1379/codex-chatgpt-web-gateway:gateway-latest
+    pull_policy: always
     container_name: chatgpt-web-gateway
     restart: unless-stopped
     env_file:
@@ -14,7 +13,6 @@ services:
       GATEWAY_PORT: 17840
       GATEWAY_INTERNAL_PORT: 17841
       GATEWAY_TRUST_PROXY: "true"
-      GATEWAY_BIND_IP: 127.0.0.1
       GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-}
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-}
       GATEWAY_ALLOW_INSECURE_HTTP: "false"
