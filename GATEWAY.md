@@ -24,7 +24,7 @@ Implemented in this branch:
 3. Set `GATEWAY_API_KEY` and `GATEWAY_ADMIN_PASSWORD` to unique strong values. Do not reuse CPA management credentials.
 4. Put a valid TLS certificate and key in `./certs/fullchain.pem` and `./certs/privkey.pem`, or set `GATEWAY_CERT_DIR`, `GATEWAY_TLS_CERT_FILE`, and `GATEWAY_TLS_KEY_FILE` to your certificate paths.
 5. In 1Panel, create a Compose project from `docker-compose.gateway.yml`. By default, port 17840 is published on `127.0.0.1` only; port 17841 is never published.
-6. For a temporary test, keep the public port closed and use an SSH tunnel or a 1Panel reverse proxy with HTTPS. If you choose to publish 17840 directly, first configure TLS certificates, set `GATEWAY_BIND_IP=127.0.0.1`, remove `GATEWAY_ALLOW_INSECURE_HTTP`, and verify the HTTPS endpoint. Restrict the cloud security-group rule to your own public IP. Do not expose plain HTTP with admin/browser controls.
+6. For a temporary test, keep the public port closed and use an SSH tunnel or a 1Panel reverse proxy with HTTPS. If you choose to publish 17840 directly, first configure TLS certificates, set `GATEWAY_BIND_IP=0.0.0.0`, configure valid TLS certificate/key paths, set `GATEWAY_ALLOW_INSECURE_HTTP=false`, and verify the HTTPS endpoint. Restrict the cloud security-group rule to your own public IP. Do not expose plain HTTP with admin/browser controls.
 7. Open the secured URL, log in with `GATEWAY_ADMIN_PASSWORD`, choose Start browser, sign in to ChatGPT, return to `chatgpt.com`, and click Save session.
 8. Call `/v1/models` with `GATEWAY_API_KEY`. Test `POST /v1/responses` before connecting CPA.
 
@@ -33,7 +33,7 @@ Implemented in this branch:
 - `GET /healthz`: minimal health, no session/account details.
 - `GET /v1/models`: API-key protected.
 - `POST /v1/responses`: API-key protected, uses the upstream project's existing Responses implementation.
-- `POST /v1/responses/compact`, `POST /v1/alpha/search`, and image endpoints are proxied if supported by the core.
+- `POST /v1/responses/compact` is proxied to the existing core. Search and image endpoints are not exposed by this Gateway allowlist in the current prototype.
 
 Example:
 
