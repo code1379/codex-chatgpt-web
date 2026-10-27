@@ -32,15 +32,3 @@ jobs:
         run: docker compose -f docker-compose.gateway.yml config --quiet
       - name: Build Gateway container
         run: docker build -f Dockerfile.gateway -t codex-chatgpt-web-gateway:ci .
-
-  container-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
-      - name: Prepare example environment
-        run: cp .env.gateway.example .env
-      - name: Validate Compose syntax
-        run: docker compose -f docker-compose.gateway.yml config --quiet
-      - name: Build Gateway container
-        run: docker build -f Dockerfile.gateway -t codex-chatgpt-web-gateway:ci .
