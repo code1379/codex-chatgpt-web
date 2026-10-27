@@ -54,12 +54,12 @@ curl -sS https://YOUR_SERVER_OR_DOMAIN:17840/v1/models \
 
 ### 1Panel domain + HTTPS reverse proxy (recommended)
 
-The Compose project publishes the Gateway only on the VPS loopback address `127.0.0.1:17840`; it does not publish the internal Responses core at `17841`. The Compose file enables trusted-proxy handling, but the Gateway trusts forwarded scheme headers only when the TCP peer is a loopback address.
+The Compose project uses Docker host networking and binds the Gateway listener directly to VPS loopback `127.0.0.1:17840`; the internal Responses core binds to `127.0.0.1:17841`. Neither port is exposed on the public interface. The Compose file enables trusted-proxy handling for the 1Panel/OpenResty HTTPS terminator.
 
-1. In 1Panel, add a DNS A record for a subdomain you control, pointing to this VPS.
-2. Create the Compose project from this branch and set strong unique values in `.env`. Keep `GATEWAY_BIND_IP=127.0.0.1`. Do not open TCP/17840 in the cloud security group.
+1. Add a DNS A record for `gateway.ohmygod.qzz.io` pointing to your VPS. Cloudflare orange-cloud DNS-over-HTTPS should return Cloudflare edge IPs; a local `dig` result in `198.18.0.0/15` can be a proxy Fake-IP.
+2. Create the Compose project from this branch and set strong unique values in `.env`. Do not open TCP/17840 or TCP/17841 in the cloud security group. With host networking, both listeners bind only to VPS loopback.
 3. In 1Panel, create a Website for the subdomain and enable HTTPS with a valid certificate.
-4. Set the website's reverse proxy target to `http://127.0.0.1:17840`. Keep the original Host header and pass `X-Forwarded-Proto: https` (1Panel/OpenResty commonly does this by default).
+4. Set the website's reverse proxy target to `http://127.0.0.1:17840`. Preserve the original Host header and pass `X-Forwarded-Proto: https`.
 5. Visit `https://your-subdomain/`. Log in with `GATEWAY_ADMIN_PASSWORD`, start the browser, complete ChatGPT sign-in, then save the session.
 6. Verify `https://your-subdomain/healthz`, then call `GET /v1/models` using `GATEWAY_API_KEY`. Do not connect CPA until these pass.
 
