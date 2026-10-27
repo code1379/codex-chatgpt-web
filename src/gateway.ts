@@ -188,6 +188,37 @@ export function addGatewayTurnMetadata(
   // Every browser turn must have a fresh identity; a caller-provided turn_id may be stale
   // or duplicated by clients that retry. Preserve the thread identity, rotate turn_id.
   const turnId = newGatewayIdentity("turn");
+  // The browser-session replay layer requires a canonical user message carrying this turn ID.
+  // Generic Responses clients commonly send input as a plain string; normalize that shorthand
+  // into the equivalent message item before the core parser sees it.
+  if (typeof body.input === "string") {
+    body.input = [{
+      type: "message",
+      role: "user",
+      content: body.input,
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    }];
+  } else if (Array.isArray(body.input)) {
+    const input = [...body.input];
+    for (let index = input.length - 1; index >= 0; index -= 1) {
+      const item = input[index];
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const record = item as Record<string, unknown>;
+      if (record.role !== "user" || (record.type !== undefined && record.type !== "message")) continue;
+      const rawMessageMetadata = record.internal_chat_message_metadata_passthrough;
+      const messageMetadata = rawMessageMetadata && typeof rawMessageMetadata === "object" && !Array.isArray(rawMessageMetadata)
+        ? { ...(rawMessageMetadata as Record<string, unknown>) }
+        : {};
+      messageMetadata.turn_id = turnId;
+      input[index] = {
+        ...record,
+        type: "message",
+        internal_chat_message_metadata_passthrough: messageMetadata,
+      };
+      break;
+    }
+    body.input = input;
+  }
   turnMetadata.thread_id = threadId;
   turnMetadata.turn_id = turnId;
   clientMetadata["x-codex-turn-metadata"] = JSON.stringify(turnMetadata);
