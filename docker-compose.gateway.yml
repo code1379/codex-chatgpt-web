@@ -10,26 +10,21 @@ services:
     environment:
       CODEX_CHATGPT_WEB_HOME: /data
       GATEWAY_CHROMIUM_PATH: /usr/bin/chromium
-      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_HOST: 127.0.0.1
       GATEWAY_PORT: 17840
       GATEWAY_INTERNAL_PORT: 17841
       GATEWAY_TRUST_PROXY: "true"
+      GATEWAY_BIND_IP: 127.0.0.1
       GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-}
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-}
-      GATEWAY_ALLOW_INSECURE_HTTP: ${GATEWAY_ALLOW_INSECURE_HTTP:-false}
+      GATEWAY_ALLOW_INSECURE_HTTP: "false"
     command:
       - sh
       - -lc
-      - |
-        if [ "$$GATEWAY_BIND_IP" = "127.0.0.1" ] && [ -z "$$GATEWAY_TLS_CERT_FILE" ] && [ -z "$$GATEWAY_TLS_KEY_FILE" ]; then
-          export GATEWAY_ALLOW_INSECURE_HTTP=true
-        fi
-        exec xvfb-run -a bun run src/cli.ts gateway
-    ports:
-      - "${GATEWAY_BIND_IP:-127.0.0.1}:17840:17840"
+      - exec xvfb-run -a bun run src/cli.ts gateway
+    network_mode: host
     volumes:
       - gateway-data:/data
-      - ${GATEWAY_CERT_DIR:-./certs}:/certs:ro
     shm_size: "1gb"
     security_opt:
       - no-new-privileges:true
@@ -42,7 +37,7 @@ services:
     tmpfs:
       - /tmp:size=512m,mode=1777
     healthcheck:
-      test: ["CMD-SHELL", "curl -kfsS https://127.0.0.1:17840/healthz >/dev/null || curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:17840/healthz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
