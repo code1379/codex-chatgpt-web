@@ -88,11 +88,12 @@ function isLoopbackAddress(address: string | undefined): boolean {
   return normalized === "127.0.0.1" || normalized === "::1";
 }
 
-function effectiveRequestUrl(request: Request, remoteAddress?: string): URL {
+export function effectiveRequestUrl(request: Request): URL {
   const url = new URL(request.url);
-  // Trust forwarded scheme only when the connection itself came from a loopback proxy.
-  // This is needed when 1Panel/OpenResty terminates HTTPS and proxies to local HTTP.
-  if (process.env.GATEWAY_TRUST_PROXY === "true" && isLoopbackAddress(remoteAddress)) {
+  // Only enable this when the Gateway listener is published on host loopback behind
+  // a trusted reverse proxy (the default Compose topology). Never publish plain HTTP
+  // directly to the Internet while trusting forwarded headers.
+  if (process.env.GATEWAY_TRUST_PROXY === "true") {
     const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
     if (forwardedProto === "https" || forwardedProto === "http") {
       url.protocol = forwardedProto + ":";
@@ -101,11 +102,11 @@ function effectiveRequestUrl(request: Request, remoteAddress?: string): URL {
   return url;
 }
 
-function originIsSame(request: Request, remoteAddress?: string): boolean {
+function originIsSame(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return false;
   try {
-    return new URL(origin).origin === effectiveRequestUrl(request, remoteAddress).origin;
+    return new URL(origin).origin === effectiveRequestUrl(request).origin;
   } catch {
     return false;
   }
@@ -547,7 +548,7 @@ export async function runGateway(): Promise<void> {
     async fetch(request) {
       const url = new URL(request.url);
       const remoteAddress = publicServer.requestIP(request)?.address;
-      const externalUrl = effectiveRequestUrl(request, remoteAddress);
+      const externalUrl = effectiveRequestUrl(request);
       const secure = externalUrl.protocol === "https:" || Boolean(tls);
       if (request.method === "GET" && url.pathname === "/healthz") {
         return Response.json({ status: "ok", service: "codex-chatgpt-web-gateway", version: VERSION }, {
@@ -556,7 +557,7 @@ export async function runGateway(): Promise<void> {
       }
 
       if (request.method === "POST" && url.pathname === "/admin/login") {
-        if (!originIsSame(request, remoteAddress)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
+        if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Login request must be same-origin");
         const declaredLength = Number(request.headers.get("content-length") ?? "0");
         if (declaredLength > 4096) return jsonError(413, "request_too_large", "Login request is too large");
         const clientAddress = publicServer.requestIP(request)?.address ?? "unknown";
