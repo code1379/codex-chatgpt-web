@@ -547,7 +547,6 @@ export async function runGateway(): Promise<void> {
     ...(tls ? { tls } : {}),
     async fetch(request) {
       const url = new URL(request.url);
-      const remoteAddress = publicServer.requestIP(request)?.address;
       const externalUrl = effectiveRequestUrl(request);
       const secure = externalUrl.protocol === "https:" || Boolean(tls);
       if (request.method === "GET" && url.pathname === "/healthz") {
@@ -604,7 +603,7 @@ export async function runGateway(): Promise<void> {
       }
 
       if (request.method === "POST" && url.pathname === "/admin/logout") {
-        if (!originIsSame(request, remoteAddress)) return jsonError(403, "origin_rejected", "Logout request must be same-origin");
+        if (!originIsSame(request)) return jsonError(403, "origin_rejected", "Logout request must be same-origin");
         const token = sessionFromRequest(request, sessions);
         if (token) sessions.delete(token);
         return Response.json({ status: "ok" }, { headers: secureHeaders({ "set-cookie": clearCookieHeader(secure) }) });
@@ -613,7 +612,7 @@ export async function runGateway(): Promise<void> {
       const adminToken = sessionFromRequest(request, sessions);
       if (url.pathname.startsWith("/admin/")) {
         if (!adminToken) return jsonError(401, "admin_auth_required", "Administrator login required");
-        if (request.method !== "GET" && !originIsSame(request, remoteAddress)) {
+        if (request.method !== "GET" && !originIsSame(request)) {
           return jsonError(403, "origin_rejected", "Administrative requests must be same-origin");
         }
         if (request.method === "GET" && url.pathname === "/admin/status") {
