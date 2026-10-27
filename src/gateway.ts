@@ -35,8 +35,8 @@ type AdminSession = { expiresAt: number };
 
 function requiredSecret(name: string, minimumLength: number): string {
   const value = process.env[name]?.trim() ?? "";
-  if (value.length < minimumLength) {
-    throw new Error(name + " must be configured and contain at least " + minimumLength + " characters");
+  if (value.length < minimumLength || /REPLACE_WITH|CHANGE_ME|YOUR_RANDOM/i.test(value)) {
+    throw new Error(name + " must be set to a unique secret of at least " + minimumLength + " characters; replace any example placeholder first");
   }
   return value;
 }
