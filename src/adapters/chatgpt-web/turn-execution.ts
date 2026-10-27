@@ -682,9 +682,14 @@ export class ChatGptTurnSessions {
       }
     }
     if (preserved) this.entries.set(preserved.executionKey, preserved.session);
-    const release = matches.findLast(([, session]) => (
-      session.runtime.releaseRetainedConversation !== undefined
-    ))?.[1].runtime.releaseRetainedConversation;
+    let release: (() => void | Promise<void>) | undefined;
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const session = matches[index]?.[1];
+      if (session?.runtime.releaseRetainedConversation !== undefined) {
+        release = session.runtime.releaseRetainedConversation;
+        break;
+      }
+    }
     const retirement = Promise.all(matches.map(([, session]) => session.physicalSettlement))
       .then(async () => { await release?.(); });
     this.conversationRetirements.set(conversationKey, retirement);
