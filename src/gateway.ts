@@ -416,7 +416,7 @@ class RemoteLoginBrowser {
           solAvailable: capabilities.solAvailable,
           extraHighAvailable: capabilities.extraHighAvailable,
           proAvailable: capabilities.proAvailable,
-        }) + "\\n", { mode: 0o600 });
+        }) + "\n", { mode: 0o600 });
         this.config.solAvailable = capabilities.solAvailable;
         this.config.extraHighAvailable = capabilities.solAvailable && capabilities.extraHighAvailable;
         this.config.proAvailable = capabilities.solAvailable && capabilities.proAvailable;
